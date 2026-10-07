@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sheetdiff"
+version = "0.1.0"
+description = "Diff Excel workbooks without Excel: formulas, values and dependency impact."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "sqm" }]
+keywords = ["excel", "xlsx", "xlsx-diff", "spreadsheet", "diff", "cli", "ci", "dependency-graph"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business :: Financial :: Spreadsheet",
+  "Topic :: Software Development :: Quality Assurance",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/sqmyou/sheetdiff"
+Repository = "https://github.com/sqmyou/sheetdiff"
+Changelog = "https://github.com/sqmyou/sheetdiff/blob/main/CHANGELOG.md"
+
+[project.scripts]
+sheetdiff = "sheetdiff.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  # Used only to write reference workbooks for the interop tests. Not a runtime
+  # dependency; sheetdiff reads .xlsx with the standard library alone.
+  "openpyxl>=3.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sheetdiff"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RET", "ARG", "PTH"]
+ignore = ["SIM108"]
+
+[tool.ruff.lint.per-file-ignores]
+# Fixture lines build a whole sheet in one call; wrapping them hurts more than it helps.
+"tests/*" = ["ARG", "E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# Tests are checked, but not for the ceremony that adds nothing there.
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
