@@ -23,6 +23,14 @@ First release.
 - Stale-cell detection, for a formula edited without the workbook being
   recalculated.
 
+## [0.2.1] - 2026-10-07
+
+### Fixed
+
+- `Shift` was listed in `__all__` but never imported, so `sheetdelta.Shift`
+  raised `AttributeError` even though it was advertised. A test now walks
+  `__all__` and fails if any advertised name is missing.
+
 ## [0.2.0] - 2026-10-07
 
 ### Added
@@ -49,6 +57,7 @@ First release.
   and a range is walked row by row over only the rows that hold cells, so
   `SUM(A:A)` costs the cells it touches rather than a million probes.
 
+[0.2.1]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.1
 [0.2.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.0
 [0.1.1]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.1.1
 [0.1.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.1.0
