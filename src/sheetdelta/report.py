@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .differ import CellChange, DiffResult, Severity, SheetChange
+from .differ import CellChange, DiffResult, Severity, SheetChange, Shift
 from .model import CellRef
 
 _MARK = {
@@ -58,6 +58,8 @@ def _render_sheet(sheet: SheetChange) -> list[str]:
         header += f"  ({detail})"
 
     lines = [header]
+    if sheet.shift is not None:
+        lines.append(f"  {_MARK[Severity.INFO]} {sheet.shift.label}")
     for change in sheet.cell_changes:
         lines.extend(_render_change(change))
     return lines
@@ -88,6 +90,47 @@ def _describe_affected(affected: list[CellRef]) -> str:
         shown += f", and {len(affected) - 6} more"
     noun = "cell" if len(affected) == 1 else "cells"
     return f"{len(affected)} {noun} downstream: {shown}"
+
+
+def render_summary(result: DiffResult) -> str:
+    """Render a one-line-per-sheet count, for a CI log.
+
+    The full report is the product, but a CI job often only wants the shape of
+    the change: how many sheets moved and how many breaks there are. This is
+    that, with no cell detail.
+    """
+    if not result.sheet_changes:
+        return "No changes."
+
+    lines = [f"{result.old_path}  ->  {result.new_path}"]
+    for sheet in result.sheet_changes:
+        if sheet.kind == "added":
+            lines.append(f"  {sheet.name}: sheet added")
+            continue
+        if sheet.kind == "removed":
+            lines.append(f"  {sheet.name}: sheet removed")
+            continue
+        if sheet.kind == "renamed":
+            head = f"  {sheet.old_name} -> {sheet.name}: renamed"
+        else:
+            head = f"  {sheet.name}"
+
+        bits: list[str] = []
+        if sheet.shift is not None:
+            bits.append(sheet.shift.label)
+        count = len(sheet.cell_changes)
+        if count:
+            bits.append(f"{count} change{'s' if count != 1 else ''}")
+        breaking = sheet.breaking_count
+        if breaking:
+            bits.append(f"{breaking} breaking")
+        if bits:
+            lines.append(f"{head}: {', '.join(bits)}")
+        else:
+            lines.append(head)
+
+    lines.append(_summary(result))
+    return "\n".join(lines)
 
 
 def _summary(result: DiffResult) -> str:
@@ -142,11 +185,24 @@ def to_dict(result: DiffResult) -> dict[str, Any]:
 
 
 def _sheet_dict(sheet: SheetChange) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "kind": sheet.kind,
         "name": sheet.name,
         "old_name": sheet.old_name,
         "changes": [_change_dict(change) for change in sheet.cell_changes],
+    }
+    if sheet.shift is not None:
+        out["shift"] = _shift_dict(sheet.shift)
+    return out
+
+
+def _shift_dict(shift: Shift) -> dict[str, Any]:
+    return {
+        "axis": shift.axis,
+        "inserted": shift.inserted,
+        "count": shift.count,
+        "at": shift.at,
+        "label": shift.label,
     }
 
 

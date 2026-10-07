@@ -110,6 +110,23 @@ sheetdelta diff old.xlsx new.xlsx --json
 }
 ```
 
+### Summary output
+
+```console
+sheetdelta diff old.xlsx new.xlsx --summary
+```
+
+The full report is what you want on a laptop. In a CI log you often want the
+shape of the change and nothing else: one line per sheet, with the counts.
+
+```console
+$ sheetdelta diff budget_v1.xlsx budget_v2.xlsx --summary
+budget_v1.xlsx  ->  budget_v2.xlsx
+  Revenue: 1 row inserted at row 3, 2 changes, 1 breaking
+  Summary: 1 change
+1 formula; 2 added across 2 edited sheet(s). 1 breaking change.
+```
+
 ### Check one workbook
 
 ```console
@@ -151,6 +168,21 @@ a spreadsheet, and flagging it would make the audit useless on real files.
 | Formula changed but the cached value did not move | stale |
 | New cell | info |
 | Sheet added, removed or renamed | info |
+| Row or column inserted or removed | info |
+
+A **row or column insert** is reported as one event, not as every cell below
+it. Excel has no "insert row" in the file format: it rewrites each cell below
+to a new address. Compared naively, inserting one row near the top makes the
+whole rest of the sheet look changed and buries the real edit. `sheetdelta`
+lines the contents up instead, so it can say `1 row inserted at row 3` and
+leave only the genuinely new cells as changes. The insert is only claimed when
+the block below it really does line up, so two unrelated sheets are never
+aligned by force. A real edit that moved with the insert is still reported.
+
+A **structured reference** into an Excel table is understood, not treated as
+text. A formula like `SUM(Sales[Amount])` is resolved against the table's
+definition, so the dependency graph knows which cells it reads and an edit to
+any of them is reported as reaching the formula.
 
 The **stale** case is worth explaining. Excel stores both a formula and the
 last value it calculated for it. When a file is edited by something that does
@@ -173,10 +205,11 @@ Being clear about this saves you time.
 - **It does not write or edit workbooks.** Read-only, by design.
 - **It only reads `.xlsx` and `.xlsm`.** The old `.xls` and binary `.xlsb`
   formats are rejected with a clear message rather than half-parsed.
-- **It does not align rows across an insertion.** If a row is inserted near
-  the top, every cell below it reports as changed. Matching rows by content
-  is the hard part of spreadsheet diffing and is not implemented yet.
 - **It does not read VBA macros** inside `.xlsm` files.
+- **It aligns an insert, but not a sort or a reorder.** Inserting or removing
+  rows or columns is recognised as one event. Moving existing rows around
+  without changing them is not: matching blocks that were shuffled is a
+  different problem and is not attempted.
 
 ## Using it as a library
 
@@ -207,6 +240,10 @@ no graph.
 References are kept as ranges rather than expanded. `SUM(A:A)` covers a
 million cells, and expanding it would cost more than the entire diff; the
 graph asks whether a range contains a cell instead.
+
+Excel tables are read from the table parts, and a structured reference such as
+`Sales[Amount]` is resolved to the column of cells it names, so the graph sees
+through the table syntax to the addresses underneath.
 
 ## Requirements
 

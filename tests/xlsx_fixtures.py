@@ -32,6 +32,18 @@ class FakeCell:
 class FakeSheet:
     name: str
     cells: list[FakeCell] = field(default_factory=list)
+    tables: list[FakeTable] = field(default_factory=list)
+
+
+@dataclass
+class FakeTable:
+    """An Excel table: the block it covers and its column names."""
+
+    name: str
+    ref: str  # e.g. "A1:B5"
+    columns: list[str]
+    header_row: bool = True
+    totals_row: bool = False
 
 
 def write_workbook(
@@ -47,8 +59,16 @@ def write_workbook(
     shared_strings = shared_strings or []
     defined_names = defined_names or {}
 
+    table_parts: dict[int, list[tuple[str, FakeTable]]] = {}
+    for index, sheet in enumerate(sheets, start=1):
+        if sheet.tables:
+            table_parts[index] = [
+                (f"xl/tables/table{index}_{position}.xml", table)
+                for position, table in enumerate(sheet.tables, start=1)
+            ]
+
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", _content_types())
+        archive.writestr("[Content_Types].xml", _content_types(table_parts))
         archive.writestr("_rels/.rels", _root_rels())
         archive.writestr("xl/workbook.xml", _workbook(sheets, defined_names, date1904))
         archive.writestr("xl/_rels/workbook.xml.rels", _workbook_rels(sheets))
@@ -56,16 +76,64 @@ def write_workbook(
             archive.writestr("xl/sharedStrings.xml", _shared_strings(shared_strings))
         archive.writestr("xl/styles.xml", _styles(date_styles))
         for index, sheet in enumerate(sheets, start=1):
-            archive.writestr(f"xl/worksheets/sheet{index}.xml", _sheet(sheet))
+            archive.writestr(
+                f"xl/worksheets/sheet{index}.xml", _sheet(sheet, table_parts.get(index, []))
+            )
+            if index in table_parts:
+                archive.writestr(
+                    f"xl/worksheets/_rels/sheet{index}.xml.rels",
+                    _sheet_rels(table_parts[index]),
+                )
+        for parts in table_parts.values():
+            for part, table in parts:
+                archive.writestr(part, _table(table))
     return path
 
 
-def _content_types() -> str:
+def _content_types(table_parts: dict[int, list[tuple[str, FakeTable]]]) -> str:
+    overrides = "".join(
+        f'<Override PartName="/{part}" '
+        'ContentType="application/vnd.openxmlformats-officedocument.'
+        'spreadsheetml.table+xml"/>'
+        for parts in table_parts.values()
+        for part, _ in parts
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<Types xmlns="{CONTENT_TYPES}">'
         '<Default Extension="xml" ContentType="application/xml"/>'
+        f"{overrides}"
         "</Types>"
+    )
+
+
+def _sheet_rels(parts: list[tuple[str, FakeTable]]) -> str:
+    rels = "".join(
+        f'<Relationship Id="rIdTable{position}" Type="{REL}/table" '
+        f'Target="../tables/{part.rsplit("/", 1)[-1]}"/>'
+        for position, (part, _) in enumerate(parts, start=1)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<Relationships xmlns="{PKG_REL}">{rels}</Relationships>'
+    )
+
+
+def _table(table: FakeTable) -> str:
+    columns = "".join(
+        f'<tableColumn id="{i}" name="{_esc(name)}"/>'
+        for i, name in enumerate(table.columns, start=1)
+    )
+    attrs = f'id="1" name="{_esc(table.name)}" displayName="{_esc(table.name)}" ref="{table.ref}"'
+    if not table.header_row:
+        attrs += ' headerRowCount="0"'
+    if table.totals_row:
+        attrs += ' totalsRowCount="1"'
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<table xmlns="{MAIN}" {attrs}>'
+        f'<tableColumns count="{len(table.columns)}">{columns}</tableColumns>'
+        "</table>"
     )
 
 
@@ -129,11 +197,19 @@ def _styles(date_styles: tuple[int, ...]) -> str:
     )
 
 
-def _sheet(sheet: FakeSheet) -> str:
+def _sheet(sheet: FakeSheet, table_parts: list[tuple[str, FakeTable]]) -> str:
     cells = "".join(_cell(cell) for cell in sheet.cells)
+    table_parts_xml = ""
+    if table_parts:
+        parts = "".join(
+            f'<tablePart r:id="rIdTable{position}"/>'
+            for position, _ in enumerate(table_parts, start=1)
+        )
+        table_parts_xml = f'<tableParts count="{len(table_parts)}">{parts}</tableParts>'
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<worksheet xmlns="{MAIN}"><sheetData>{cells}</sheetData></worksheet>'
+        f'<worksheet xmlns="{MAIN}" xmlns:r="{REL}">'
+        f"<sheetData>{cells}</sheetData>{table_parts_xml}</worksheet>"
     )
 
 

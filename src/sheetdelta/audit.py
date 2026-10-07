@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .model import Cell, CellIndex, CellKind, CellRef, Workbook
+from .model import Cell, CellIndex, CellKind, CellRef, Reference, TableRef, Workbook
 
 
 @dataclass
@@ -81,9 +81,20 @@ def audit_workbook(workbook: Workbook) -> AuditResult:
 
 
 def _missing_sheets(cell: Cell, workbook: Workbook) -> list[BrokenReference]:
-    """Every reference in one formula that names a sheet that is not there."""
+    """Every reference in one formula that names a sheet or table that is not there."""
     out: list[BrokenReference] = []
     for reference in sorted(cell.refs, key=str):
+        if isinstance(reference, TableRef):
+            if reference.table.lower() not in workbook.tables:
+                out.append(
+                    BrokenReference(
+                        ref=cell.ref,
+                        formula=cell.formula or "",
+                        target=str(reference),
+                        reason=f"table '{reference.table}' is not defined",
+                    )
+                )
+            continue
         if workbook.sheet_by_name(reference.sheet) is None:
             out.append(
                 BrokenReference(
@@ -157,10 +168,16 @@ def _dependency_graph(workbook: Workbook) -> dict[CellRef, set[CellRef]]:
                 continue
             targets: set[CellRef] = set()
             for reference in cell.refs:
-                if workbook.sheet_by_name(reference.sheet) is None:
-                    continue
+                if isinstance(reference, TableRef):
+                    resolved: Reference | None = reference.resolve(workbook.tables)
+                    if resolved is None:
+                        continue
+                else:
+                    if workbook.sheet_by_name(reference.sheet) is None:
+                        continue
+                    resolved = reference
                 targets.update(
-                    ref for ref in index.covered(reference) if ref != cell.ref
+                    ref for ref in index.covered(resolved) if ref != cell.ref
                 )
             if targets:
                 graph[cell.ref] = targets

@@ -99,6 +99,43 @@ class TestCli:
         assert code == 1
         assert "does not exist" in out
 
+    def test_summary_flag_prints_counts_without_cell_detail(self, tmp_path, capsys):
+        old, new = _pair(tmp_path)
+        code = main(["diff", old, new, "--summary", "--fail-on", "never"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Revenue" in out
+        assert "A3" not in out  # no per-cell detail in a summary
+        assert "breaking" in out
+
+    def test_summary_reports_a_shift(self, tmp_path, capsys):
+        old = str(tmp_path / "old.xlsx")
+        new = str(tmp_path / "new.xlsx")
+        write_workbook(
+            old, [FakeSheet("S", [FakeCell("A1", value="1"), FakeCell("A2", value="2")])]
+        )
+        write_workbook(
+            new,
+            [
+                FakeSheet(
+                    "S",
+                    [
+                        FakeCell("A1", value="1"),
+                        FakeCell("A2", value="new"),
+                        FakeCell("A3", value="2"),
+                    ],
+                )
+            ],
+        )
+        main(["diff", old, new, "--summary", "--fail-on", "never"])
+        assert "1 row inserted at row 2" in capsys.readouterr().out
+
+    def test_summary_of_identical_workbooks(self, tmp_path, capsys):
+        path = str(tmp_path / "same.xlsx")
+        write_workbook(path, [FakeSheet("S", [FakeCell("A1", value="1")])])
+        main(["diff", path, path, "--summary"])
+        assert "No changes." in capsys.readouterr().out
+
 
 class TestReport:
     def test_text_report_shows_old_and_new(self, tmp_path):

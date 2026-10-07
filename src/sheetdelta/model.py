@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -72,7 +72,63 @@ class RangeRef:
         return f"{self.sheet}!{self.a1}"
 
 
-Reference = CellRef | RangeRef
+@dataclass(frozen=True)
+class TableRef:
+    """A structured reference into an Excel table, e.g. ``Table1[Amount]``.
+
+    The column named is kept rather than resolved to a range, because a table
+    can be edited (rows appended, columns renamed) and the reference text stays
+    the same. Resolution needs the table's definition, which only the workbook
+    has, so :meth:`resolve` takes it.
+    """
+
+    table: str
+    column: str | None = None
+    specifier: str | None = None
+
+    @property
+    def a1(self) -> str:
+        return f"{self.table}[{self.column or self.specifier or ''}]"
+
+    def __str__(self) -> str:
+        return self.a1
+
+    def resolve(self, tables: Mapping[str, Table]) -> RangeRef | None:
+        """The range this reference covers, or None if it cannot be pinned down."""
+        table = tables.get(self.table.lower())
+        if table is None:
+            return None
+
+        if self.column is not None:
+            column = table.column_number(self.column)
+            if column is None:
+                return None
+            min_col = max_col = column
+        else:
+            min_col, max_col = table.min_col, table.max_col
+
+        # The specifier picks the rows; without one a structured reference means
+        # the data body, which excludes the header and any totals row.
+        specifier = (self.specifier or "").lower()
+        if specifier in {"", "#data"}:
+            min_row, max_row = table.first_data_row, table.last_data_row
+        elif specifier == "#all":
+            min_row, max_row = table.first_row, table.last_row
+        elif specifier == "#headers":
+            if not table.has_header_row:
+                return None
+            min_row = max_row = table.first_row
+        elif specifier == "#totals":
+            if not table.has_totals_row:
+                return None
+            min_row = max_row = table.last_data_row
+        else:
+            return None
+
+        return RangeRef(table.sheet, min_col, max_col, min_row, max_row)
+
+
+Reference = CellRef | RangeRef | TableRef
 
 
 class CellIndex:
@@ -93,6 +149,11 @@ class CellIndex:
 
     def covered(self, reference: Reference) -> list[CellRef]:
         """Every indexed cell that ``reference`` points at."""
+        if isinstance(reference, TableRef):
+            # A structured reference cannot be resolved without the workbook's
+            # table definitions, and this index does not carry them.
+            return []
+
         if isinstance(reference, CellRef):
             row_cells = self._by_row.get((reference.sheet, reference.row))
             if not row_cells:
@@ -154,6 +215,50 @@ class Cell:
         return self.cached_value if self.cached_value is not None else ""
 
 
+@dataclass(frozen=True)
+class Table:
+    """One Excel table: the sheet and block it occupies, plus its column names.
+
+    The header row is not always present and the totals row is optional, so both
+    are tracked: a structured reference means different rows depending on which
+    part of the table it names.
+    """
+
+    name: str
+    sheet: str
+    min_col: int
+    max_col: int
+    min_row: int
+    max_row: int
+    columns: tuple[str, ...] = ()
+    has_header_row: bool = True
+    has_totals_row: bool = False
+
+    @property
+    def first_row(self) -> int:
+        return self.min_row
+
+    @property
+    def last_row(self) -> int:
+        return self.max_row
+
+    @property
+    def first_data_row(self) -> int:
+        return self.min_row + 1 if self.has_header_row else self.min_row
+
+    @property
+    def last_data_row(self) -> int:
+        return self.max_row - 1 if self.has_totals_row else self.max_row
+
+    def column_number(self, name: str) -> int | None:
+        """The grid column a table column name sits in, case-insensitively."""
+        lowered = name.strip().lower()
+        for offset, column in enumerate(self.columns):
+            if column.strip().lower() == lowered:
+                return self.min_col + offset
+        return None
+
+
 @dataclass
 class Sheet:
     """One worksheet: its name in file order, plus every non-empty cell."""
@@ -179,6 +284,7 @@ class Workbook:
     path: str
     sheets: list[Sheet]
     defined_names: dict[str, str] = field(default_factory=dict)
+    tables: dict[str, Table] = field(default_factory=dict)
     date1904: bool = False
 
     def sheet_by_name(self, name: str) -> Sheet | None:

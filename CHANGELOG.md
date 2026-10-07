@@ -23,6 +23,22 @@ First release.
 - Stale-cell detection, for a formula edited without the workbook being
   recalculated.
 
+## [0.2.0] - 2026-10-07
+
+### Added
+
+- Row and column insert/remove detection. An insert is reported once, as
+  `1 row inserted at row 3`, instead of every cell below it reading as changed.
+  The old and new cells are lined up by content before they are compared, so an
+  edit that moved with the insert is still reported. The shift is only claimed
+  when the block below it really does line up.
+- Structured references to Excel tables, such as `SUM(Sales[Amount])` and
+  `Sales[[#Totals],[Amount]]`. The table definition is read from the workbook,
+  the reference is resolved to the cells it names, and edits to those cells are
+  followed through the dependency graph to the formula that reads them.
+- `--summary` for `diff`: one line per sheet with counts, for a CI log.
+- `Shift`, `Table` and `TableRef` are exported from the package root.
+
 ## [0.1.1] - 2026-10-07
 
 ### Fixed
@@ -33,5 +49,6 @@ First release.
   and a range is walked row by row over only the rows that hold cells, so
   `SUM(A:A)` costs the cells it touches rather than a million probes.
 
+[0.2.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.0
 [0.1.1]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.1.1
 [0.1.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.1.0

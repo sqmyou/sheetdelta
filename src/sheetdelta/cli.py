@@ -17,7 +17,7 @@ from .audit import AuditResult, audit_workbook
 from .differ import diff_workbooks
 from .errors import SheetDeltaError
 from .reader import read_workbook
-from .report import exit_code, render_json, render_text
+from .report import exit_code, render_json, render_summary, render_text
 
 FAIL_ON = ("never", "any", "breaking")
 
@@ -35,6 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("old", metavar="OLD.xlsx", help="the earlier workbook")
     diff.add_argument("new", metavar="NEW.xlsx", help="the later workbook")
     diff.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    diff.add_argument(
+        "--summary",
+        action="store_true",
+        help="print counts per sheet with no cell detail, for a CI log",
+    )
     diff.add_argument(
         "--fail-on",
         choices=FAIL_ON,
@@ -70,7 +75,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _cmd_diff(args: argparse.Namespace) -> int:
     result = diff_workbooks(read_workbook(args.old), read_workbook(args.new))
-    print(render_json(result) if args.json else render_text(result))
+    if args.json:
+        print(render_json(result))
+    elif args.summary:
+        print(render_summary(result))
+    else:
+        print(render_text(result))
     return exit_code(result, args.fail_on)
 
 

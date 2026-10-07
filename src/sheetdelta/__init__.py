@@ -21,24 +21,28 @@ from .differ import CellChange, ChangeKind, DiffResult, Severity, SheetChange, d
 from .errors import SheetDeltaError, UnsupportedFormatError, WorkbookReadError
 from .model import (
     Cell,
+    CellIndex,
     CellKind,
     CellRef,
     RangeRef,
     Reference,
     Sheet,
+    Table,
+    TableRef,
     Workbook,
     column_letter,
     column_number,
 )
 from .reader import read_workbook
 from .references import extract_references
-from .report import exit_code, render_json, render_text, to_dict
+from .report import exit_code, render_json, render_summary, render_text, to_dict
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
     "Cell",
     "CellChange",
+    "CellIndex",
     "CellKind",
     "CellRef",
     "ChangeKind",
@@ -49,6 +53,9 @@ __all__ = [
     "Sheet",
     "SheetChange",
     "SheetDeltaError",
+    "Shift",
+    "Table",
+    "TableRef",
     "UnsupportedFormatError",
     "Workbook",
     "WorkbookReadError",
@@ -60,6 +67,7 @@ __all__ = [
     "extract_references",
     "read_workbook",
     "render_json",
+    "render_summary",
     "render_text",
     "to_dict",
 ]

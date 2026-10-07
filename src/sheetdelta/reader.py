@@ -25,6 +25,7 @@ from .model import (
     CellRef,
     Reference,
     Sheet,
+    Table,
     Workbook,
     column_letter,
     column_number,
@@ -82,6 +83,8 @@ def read_workbook(path: str) -> Workbook:
         sheet_names = [name for name, _ in _iter_sheets(workbook_xml)]
         sheet_map = {name.lower(): name for name in sheet_names}
         defined_names = _read_defined_names(workbook_xml)
+        tables = _read_tables(archive, sheet_map)
+        table_names = {name.lower(): table.name for name, table in tables.items()}
 
         for index, (name, rel_id) in enumerate(_iter_sheets(workbook_xml)):
             target = targets.get(rel_id)
@@ -99,7 +102,14 @@ def read_workbook(path: str) -> Workbook:
                     name=name,
                     index=index,
                     cells=_read_cells(
-                        sheet_xml, name, shared, date_formats, date1904, sheet_map, defined_names
+                        sheet_xml,
+                        name,
+                        shared,
+                        date_formats,
+                        date1904,
+                        sheet_map,
+                        defined_names,
+                        table_names,
                     ),
                 )
             )
@@ -108,6 +118,7 @@ def read_workbook(path: str) -> Workbook:
             path=path,
             sheets=sheets,
             defined_names=defined_names,
+            tables=tables,
             date1904=date1904,
         )
 
@@ -206,6 +217,149 @@ def _read_defined_names(workbook_xml: ElementTree.Element) -> dict[str, str]:
     return names
 
 
+def _sheet_table_parts(archive: zipfile.ZipFile) -> dict[str, list[str]]:
+    """Map a sheet's part path to the table parts it declares.
+
+    The link runs sheet -> tablePart relationship -> table XML, so the sheet's
+    own rels file has to be read before the tables themselves.
+    """
+    parts: dict[str, list[str]] = {}
+    for sheet_path in _sheet_part_paths(archive):
+        rels_path = _rels_path_for(sheet_path)
+        try:
+            rels = ElementTree.fromstring(archive.read(rels_path))
+        except (KeyError, ElementTree.ParseError):
+            continue
+        targets = []
+        for rel in rels.iter(f"{{{_PKG_REL_NS}}}Relationship"):
+            target = rel.get("Target")
+            if target and "table" in (rel.get("Type") or ""):
+                targets.append(_resolve_part_for(sheet_path, target))
+        if targets:
+            parts[sheet_path] = targets
+    return parts
+
+
+def _sheet_part_paths(archive: zipfile.ZipFile) -> list[str]:
+    return [
+        name
+        for name in archive.namelist()
+        if name.startswith("xl/worksheets/") and name.endswith(".xml")
+    ]
+
+
+def _rels_path_for(part: str) -> str:
+    directory, _, filename = part.rpartition("/")
+    return f"{directory}/_rels/{filename}.rels"
+
+
+def _resolve_part_for(owner: str, target: str) -> str:
+    """Resolve a relationship target relative to the part that declares it."""
+    if target.startswith("/"):
+        return target.lstrip("/")
+    directory = owner.rpartition("/")[0]
+    return posixpath.normpath(posixpath.join(directory, target))
+
+
+def _read_tables(archive: zipfile.ZipFile, sheet_map: dict[str, str]) -> dict[str, Table]:
+    """Read every Excel table, keyed by its lowercased name.
+
+    A table's ``ref`` is a range like ``A1:C10``, and its columns are listed in
+    order, so a structured reference such as ``Table1[Amount]`` can be resolved
+    to the grid column that name sits in.
+    """
+    tables: dict[str, Table] = {}
+    part_to_sheet = _sheet_names_by_part(archive, sheet_map)
+
+    for sheet_path, table_parts in _sheet_table_parts(archive).items():
+        sheet_name = part_to_sheet.get(sheet_path)
+        if sheet_name is None:
+            continue
+        for table_part in table_parts:
+            try:
+                root = ElementTree.fromstring(archive.read(table_part))
+            except (KeyError, ElementTree.ParseError):
+                continue
+            for node in root.iter(f"{{{_MAIN_NS}}}table"):
+                table = _build_table(node, sheet_name)
+                if table is not None:
+                    tables[table.name.lower()] = table
+    return tables
+
+
+def _sheet_names_by_part(
+    archive: zipfile.ZipFile, sheet_map: dict[str, str]
+) -> dict[str, str]:
+    """Map a worksheet part path to the sheet name the workbook gives it."""
+    try:
+        rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    except (KeyError, ElementTree.ParseError):
+        return {}
+    rel_to_target = {
+        rel.get("Id"): rel.get("Target")
+        for rel in rels.iter(f"{{{_PKG_REL_NS}}}Relationship")
+        if rel.get("Id") and rel.get("Target")
+    }
+    out: dict[str, str] = {}
+    for name, rel_id in _iter_sheets(_read_workbook_xml(archive)):
+        target = rel_to_target.get(rel_id)
+        if target:
+            out[_resolve_part(target)] = sheet_map.get(name.lower(), name)
+    return out
+
+
+def _read_workbook_xml(archive: zipfile.ZipFile) -> ElementTree.Element:
+    try:
+        return ElementTree.fromstring(archive.read("xl/workbook.xml"))
+    except (KeyError, ElementTree.ParseError):
+        return ElementTree.Element("workbook")
+
+
+def _build_table(node: ElementTree.Element, sheet_name: str) -> Table | None:
+    name = node.get("name") or node.get("displayName")
+    ref = node.get("ref")
+    if not name or not ref:
+        return None
+
+    bounds = _range_bounds(ref)
+    if bounds is None:
+        return None
+    min_col, max_col, min_row, max_row = bounds
+
+    columns: list[str] = []
+    for column in node.iter(f"{{{_MAIN_NS}}}tableColumn"):
+        columns.append(column.get("name") or "")
+
+    return Table(
+        name=name,
+        sheet=sheet_name,
+        min_col=min_col,
+        max_col=max_col,
+        min_row=min_row,
+        max_row=max_row,
+        columns=tuple(columns),
+        has_header_row=node.get("headerRowCount") != "0",
+        has_totals_row=node.get("totalsRowCount") == "1",
+    )
+
+
+def _range_bounds(ref: str) -> tuple[int, int, int, int] | None:
+    """Split a table's ``A1:C10`` ref into column and row bounds."""
+    start, _, end = ref.partition(":")
+    first = _A1.fullmatch(start.strip())
+    if first is None:
+        return None
+    last = _A1.fullmatch(end.strip()) if end else first
+    if last is None:
+        return None
+    return (
+        column_number(first.group(1)),
+        column_number(last.group(1)),
+        int(first.group(2)),
+        int(last.group(2)),
+    )
+
+
 def _read_cells(
     sheet_xml: ElementTree.Element,
     sheet_name: str,
@@ -214,6 +368,7 @@ def _read_cells(
     date1904: bool,
     sheet_map: dict[str, str],
     defined_names: dict[str, str],
+    table_names: dict[str, str],
 ) -> dict[CellRef, Cell]:
     """Read every non-empty cell of one sheet."""
     cells: dict[CellRef, Cell] = {}
@@ -243,7 +398,11 @@ def _read_cells(
         refs: frozenset[Reference] = frozenset()
         if formula is not None:
             refs = extract_references(
-                formula, sheet=sheet_name, sheets=sheet_map, defined_names=defined_names
+                formula,
+                sheet=sheet_name,
+                sheets=sheet_map,
+                defined_names=defined_names,
+                tables=table_names,
             )
 
         cells[ref] = Cell(
