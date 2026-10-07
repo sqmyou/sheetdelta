@@ -1,4 +1,4 @@
-"""Entry point for ``python -m sheetdiff``."""
+"""Entry point for ``python -m sheetdelta``."""
 
 from __future__ import annotations
 

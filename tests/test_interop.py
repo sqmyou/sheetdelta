@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from sheetdiff.differ import ChangeKind, diff_workbooks
-from sheetdiff.model import CellRef, column_number
-from sheetdiff.reader import read_workbook
+from sheetdelta.differ import ChangeKind, diff_workbooks
+from sheetdelta.model import CellRef, column_number
+from sheetdelta.reader import read_workbook
 
 openpyxl = pytest.importorskip("openpyxl")
 

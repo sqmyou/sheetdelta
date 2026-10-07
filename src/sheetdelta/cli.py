@@ -1,4 +1,4 @@
-"""The ``sheetdiff`` command line.
+"""The ``sheetdelta`` command line.
 
 Two subcommands: ``diff`` compares two workbooks, ``audit`` inspects one. The
 exit code is the point of the tool in CI, so ``--fail-on`` is explicit rather
@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from . import __version__
 from .audit import AuditResult, audit_workbook
 from .differ import diff_workbooks
-from .errors import SheetDiffError
+from .errors import SheetDeltaError
 from .reader import read_workbook
 from .report import exit_code, render_json, render_text
 
@@ -24,11 +24,11 @@ FAIL_ON = ("never", "any", "breaking")
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="sheetdiff",
+        prog="sheetdelta",
         description="Diff Excel workbooks without Excel.",
         epilog="Exit status: 0 no changes worth failing on, 1 changes found, 2 error.",
     )
-    parser.add_argument("--version", action="version", version=f"sheetdiff {__version__}")
+    parser.add_argument("--version", action="version", version=f"sheetdelta {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     diff = sub.add_parser("diff", help="compare two workbooks")
@@ -62,8 +62,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_diff(args)
         if args.command == "audit":
             return _cmd_audit(args)
-    except SheetDiffError as exc:
-        print(f"sheetdiff: {exc}", file=sys.stderr)
+    except SheetDeltaError as exc:
+        print(f"sheetdelta: {exc}", file=sys.stderr)
         return 2
     return 2
 

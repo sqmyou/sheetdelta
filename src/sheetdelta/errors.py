@@ -1,17 +1,17 @@
-"""Exceptions raised by sheetdiff.
+"""Exceptions raised by sheetdelta.
 
-All inherit from :class:`SheetDiffError` so the CLI can catch one type and
+All inherit from :class:`SheetDeltaError` so the CLI can catch one type and
 print a plain message instead of a traceback.
 """
 
 from __future__ import annotations
 
 
-class SheetDiffError(Exception):
-    """Base class for every error sheetdiff raises on purpose."""
+class SheetDeltaError(Exception):
+    """Base class for every error sheetdelta raises on purpose."""
 
 
-class WorkbookReadError(SheetDiffError):
+class WorkbookReadError(SheetDeltaError):
     """A workbook could not be read as an .xlsx file."""
 
 

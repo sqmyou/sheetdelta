@@ -3,7 +3,7 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "sheetdiff"
+name = "sheetdelta"
 version = "0.1.0"
 description = "Diff Excel workbooks without Excel: formulas, values and dependency impact."
 readme = "README.md"
@@ -31,12 +31,12 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/sqmyou/sheetdiff"
-Repository = "https://github.com/sqmyou/sheetdiff"
-Changelog = "https://github.com/sqmyou/sheetdiff/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/sqmyou/sheetdelta"
+Repository = "https://github.com/sqmyou/sheetdelta"
+Changelog = "https://github.com/sqmyou/sheetdelta/blob/main/CHANGELOG.md"
 
 [project.scripts]
-sheetdiff = "sheetdiff.cli:main"
+sheetdelta = "sheetdelta.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -44,12 +44,12 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
   # Used only to write reference workbooks for the interop tests. Not a runtime
-  # dependency; sheetdiff reads .xlsx with the standard library alone.
+  # dependency; sheetdelta reads .xlsx with the standard library alone.
   "openpyxl>=3.1",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sheetdiff"]
+packages = ["src/sheetdelta"]
 
 [tool.ruff]
 line-length = 100

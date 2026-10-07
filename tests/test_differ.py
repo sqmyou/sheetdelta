@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from sheetdiff.differ import ChangeKind, Severity, diff_workbooks
-from sheetdiff.reader import read_workbook
+from sheetdelta.differ import ChangeKind, Severity, diff_workbooks
+from sheetdelta.reader import read_workbook
 
 from .xlsx_fixtures import FakeCell, FakeSheet, write_workbook
 

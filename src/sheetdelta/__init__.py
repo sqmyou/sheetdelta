@@ -1,4 +1,4 @@
-"""sheetdiff: diff Excel workbooks without Excel.
+"""sheetdelta: diff Excel workbooks without Excel.
 
 Compares two .xlsx files cell by cell, including the formulas, the values
 Excel cached, and the dependency graph that says which cells a change
@@ -8,7 +8,7 @@ stored.
 Typical use is a CI check: fail the build when a formula edit corrupts a
 downstream total, pass it when the change is cosmetic.
 
-    from sheetdiff import read_workbook, diff_workbooks
+    from sheetdelta import read_workbook, diff_workbooks
 
     result = diff_workbooks(read_workbook("old.xlsx"), read_workbook("new.xlsx"))
     for change in result.breaking:
@@ -18,7 +18,7 @@ downstream total, pass it when the change is cosmetic.
 from __future__ import annotations
 
 from .differ import CellChange, ChangeKind, DiffResult, Severity, SheetChange, diff_workbooks
-from .errors import SheetDiffError, UnsupportedFormatError, WorkbookReadError
+from .errors import SheetDeltaError, UnsupportedFormatError, WorkbookReadError
 from .model import (
     Cell,
     CellKind,
@@ -48,7 +48,7 @@ __all__ = [
     "Severity",
     "Sheet",
     "SheetChange",
-    "SheetDiffError",
+    "SheetDeltaError",
     "UnsupportedFormatError",
     "Workbook",
     "WorkbookReadError",

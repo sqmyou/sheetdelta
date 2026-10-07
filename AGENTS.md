@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Repository notes for anyone (human or agent) working on sheetdiff.
+Repository notes for anyone (human or agent) working on sheetdelta.
 
 ## What this is
 
@@ -24,9 +24,9 @@ Run all three checks before pushing; CI runs them on 3.10 through 3.13.
 ## Layout
 
 ```
-src/sheetdiff/
+src/sheetdelta/
   model.py       dataclasses: CellRef, RangeRef, Cell, Sheet, Workbook
-  errors.py      the exception hierarchy, all under SheetDiffError
+  errors.py      the exception hierarchy, all under SheetDeltaError
   references.py  pulls cell/range references out of a formula
   reader.py      parses .xlsx (zipfile + xml.etree)
   differ.py      compares two workbooks, builds the dependency graph

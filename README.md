@@ -1,13 +1,13 @@
-# sheetdiff
+# sheetdelta
 
 Compare two Excel workbooks and find out what actually changed.
 
-`sheetdiff` reads two `.xlsx` files, shows you the difference cell by cell, and
+`sheetdelta` reads two `.xlsx` files, shows you the difference cell by cell, and
 then tells you which of those changes reach other cells. It runs on Linux, in
 CI, with no copy of Excel anywhere near it.
 
 ```console
-$ sheetdiff diff budget_v1.xlsx budget_v2.xlsx
+$ sheetdelta diff budget_v1.xlsx budget_v2.xlsx
 budget_v1.xlsx  ->  budget_v2.xlsx
 
 Sheet 'Revenue'  (1 change, 1 breaking)
@@ -35,14 +35,14 @@ The second is worse. A formula edit looks harmless on the sheet you are
 looking at, but the cell feeds a summary three sheets away. The number that
 matters is now wrong, and nothing tells you.
 
-`sheetdiff` answers both. Every change is followed through the dependency
+`sheetdelta` answers both. Every change is followed through the dependency
 graph, so a formula edit reports the cells it reaches, and a CI job can fail
 the build on exactly that.
 
 ## Install
 
 ```console
-pip install sheetdiff
+pip install sheetdelta
 ```
 
 No dependencies. The reader is `zipfile` and `xml.etree` from the standard
@@ -54,15 +54,15 @@ has nothing but Python.
 ### Compare two workbooks
 
 ```console
-sheetdiff diff old.xlsx new.xlsx
+sheetdelta diff old.xlsx new.xlsx
 ```
 
 Exit status is `0` when nothing breaking changed, `1` when something did, `2`
 on an error. That makes it a CI check without any extra scripting:
 
 ```yaml
-- run: pip install sheetdiff
-- run: sheetdiff diff before.xlsx after.xlsx --fail-on breaking
+- run: pip install sheetdelta
+- run: sheetdelta diff before.xlsx after.xlsx --fail-on breaking
 ```
 
 `--fail-on` takes three values:
@@ -76,7 +76,7 @@ on an error. That makes it a CI check without any extra scripting:
 ### Machine-readable output
 
 ```console
-sheetdiff diff old.xlsx new.xlsx --json
+sheetdelta diff old.xlsx new.xlsx --json
 ```
 
 ```json
@@ -113,7 +113,7 @@ sheetdiff diff old.xlsx new.xlsx --json
 ### Check one workbook
 
 ```console
-sheetdiff audit workbook.xlsx
+sheetdelta audit workbook.xlsx
 ```
 
 An audit looks for the two defects that make a workbook unsound:
@@ -124,7 +124,7 @@ An audit looks for the two defects that make a workbook unsound:
   cells, which Excel refuses to calculate at all.
 
 ```console
-$ sheetdiff audit model.xlsx
+$ sheetdelta audit model.xlsx
 model.xlsx
   3 sheet(s), 412 cell(s), 118 formula(s)
 
@@ -156,7 +156,7 @@ The **stale** case is worth explaining. Excel stores both a formula and the
 last value it calculated for it. When a file is edited by something that does
 not recalculate, the two disagree. Excel will happily show you the new
 formula next to the old number, which is a quiet way to ship a wrong total.
-`sheetdiff` flags it.
+`sheetdelta` flags it.
 
 A **rename** is detected by matching the contents of a removed sheet against
 an added one. Without that, renaming a sheet would look like every cell in it
@@ -181,7 +181,7 @@ Being clear about this saves you time.
 ## Using it as a library
 
 ```python
-from sheetdiff import diff_workbooks, read_workbook
+from sheetdelta import diff_workbooks, read_workbook
 
 result = diff_workbooks(read_workbook("old.xlsx"), read_workbook("new.xlsx"))
 
@@ -195,7 +195,7 @@ Every type is exported from the package root, and the whole thing is typed.
 
 ## How it works
 
-An `.xlsx` file is a zip containing XML. `sheetdiff` reads the sheet list, the
+An `.xlsx` file is a zip containing XML. `sheetdelta` reads the sheet list, the
 shared string table, the number formats and each sheet's cells, then stops.
 
 Each formula is scanned for the cells and ranges it mentions. That scan is

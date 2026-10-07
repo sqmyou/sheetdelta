@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
-from sheetdiff.audit import audit_workbook
-from sheetdiff.cli import main
-from sheetdiff.differ import diff_workbooks
-from sheetdiff.reader import read_workbook
-from sheetdiff.report import exit_code, render_json, render_text
+from sheetdelta.audit import audit_workbook
+from sheetdelta.cli import main
+from sheetdelta.differ import diff_workbooks
+from sheetdelta.reader import read_workbook
+from sheetdelta.report import exit_code, render_json, render_text
 
 from .xlsx_fixtures import FakeCell, FakeSheet, write_workbook
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from sheetdiff.model import CellKind, CellRef, RangeRef, column_letter, column_number
-from sheetdiff.reader import read_workbook, shift_formula
-from sheetdiff.references import extract_references
+from sheetdelta.model import CellKind, CellRef, RangeRef, column_letter, column_number
+from sheetdelta.reader import read_workbook, shift_formula
+from sheetdelta.references import extract_references
 
 from .xlsx_fixtures import FakeCell, FakeSheet, write_workbook
 
@@ -113,14 +113,14 @@ def test_unsupported_format_is_clear(tmp_path):
     path = str(tmp_path / "old.xls")
     path_obj = tmp_path / "old.xls"
     path_obj.write_bytes(b"not really a workbook")
-    from sheetdiff.errors import UnsupportedFormatError
+    from sheetdelta.errors import UnsupportedFormatError
 
     with pytest.raises(UnsupportedFormatError, match="not supported"):
         read_workbook(path)
 
 
 def test_missing_file_is_clear(tmp_path):
-    from sheetdiff.errors import WorkbookReadError
+    from sheetdelta.errors import WorkbookReadError
 
     with pytest.raises(WorkbookReadError, match="no such file"):
         read_workbook(str(tmp_path / "nope.xlsx"))
@@ -129,7 +129,7 @@ def test_missing_file_is_clear(tmp_path):
 def test_not_a_zip_is_clear(tmp_path):
     path = tmp_path / "broken.xlsx"
     path.write_bytes(b"this is not a zip")
-    from sheetdiff.errors import WorkbookReadError
+    from sheetdelta.errors import WorkbookReadError
 
     with pytest.raises(WorkbookReadError, match="not a readable"):
         read_workbook(str(path))
