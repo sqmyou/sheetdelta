@@ -11,7 +11,8 @@ import json
 from typing import Any
 
 from .audit import AuditResult
-from .differ import CellChange, DiffResult, RowMove, Severity, SheetChange, Shift
+from .batch import DirectoryDiff, WorkbookEntry
+from .differ import CellChange, DiffResult, Move, Severity, SheetChange, Shift
 from .model import CellRef
 
 _MARK = {
@@ -262,10 +263,11 @@ def _sheet_dict(sheet: SheetChange) -> dict[str, Any]:
     }
 
 
-def _move_dict(move: RowMove) -> dict[str, Any]:
+def _move_dict(move: Move) -> dict[str, Any]:
     return {
-        "old_row": move.old_row,
-        "new_row": move.new_row,
+        "axis": move.axis,
+        "old": move.old,
+        "new": move.new,
         "label": move.label,
     }
 
@@ -295,6 +297,152 @@ def _change_dict(change: CellChange) -> dict[str, Any]:
     if change.affected:
         out["affected"] = [str(ref) for ref in change.affected]
     return out
+
+
+def render_directory_text(result: DirectoryDiff) -> str:
+    """Render a directory diff as a report meant to be read."""
+    lines = [f"{result.old_dir}  ->  {result.new_dir}"]
+    if not result.has_changes:
+        lines.append("")
+        lines.append("No changes.")
+        return "\n".join(lines)
+
+    lines.append("")
+    for entry in result.entries:
+        if entry.status == "unchanged":
+            continue
+        lines.append(f"  {entry.name}  {_directory_detail(entry)}")
+
+    lines.append("")
+    lines.append(_directory_summary(result))
+    return "\n".join(lines)
+
+
+def _directory_detail(entry: WorkbookEntry) -> str:
+    if entry.status == "added":
+        return "added"
+    if entry.status == "removed":
+        return "removed"
+    bits = [f"{entry.cell_change_count} change{'s' if entry.cell_change_count != 1 else ''}"]
+    if entry.breaking_count:
+        bits.append(f"{entry.breaking_count} breaking")
+    return f"changed ({', '.join(bits)})"
+
+
+def _directory_summary(result: DirectoryDiff) -> str:
+    changed = sum(1 for e in result.entries if e.status == "changed")
+    added = sum(1 for e in result.entries if e.status == "added")
+    removed = sum(1 for e in result.entries if e.status == "removed")
+    bits = []
+    if changed:
+        bits.append(f"{changed} changed")
+    if added:
+        bits.append(f"{added} added")
+    if removed:
+        bits.append(f"{removed} removed")
+    total = len(result.entries)
+    summary = f"{', '.join(bits)} of {total} workbook(s)"
+    breaking = len(result.breaking)
+    if breaking:
+        return f"{summary}; {breaking} workbook(s) with breaking changes."
+    return f"{summary}."
+
+
+def render_directory_summary(result: DirectoryDiff) -> str:
+    """One line per changed workbook, for a CI log."""
+    if not result.has_changes:
+        return "No changes."
+    lines = [f"{result.old_dir}  ->  {result.new_dir}"]
+    for entry in result.entries:
+        if entry.status != "unchanged":
+            lines.append(f"  {entry.name}: {_directory_detail(entry)}")
+    lines.append(_directory_summary(result))
+    return "\n".join(lines)
+
+
+def render_directory_markdown(result: DirectoryDiff) -> str:
+    """Render a directory diff as a Markdown table, for a PR comment."""
+    lines = ["# Workbook diff", "", f"`{_md(result.old_dir)}` -> `{_md(result.new_dir)}`", ""]
+    if not result.has_changes:
+        lines.append("No changes.")
+        return "\n".join(lines)
+
+    lines.append("| Workbook | Change | Cells | Breaking |")
+    lines.append("| --- | --- | --- | --- |")
+    for entry in result.entries:
+        if entry.status == "unchanged":
+            continue
+        lines.append(
+            f"| {_md(entry.name)} | {entry.status} | "
+            f"{entry.cell_change_count} | {entry.breaking_count} |"
+        )
+    lines.append("")
+    lines.append(_directory_summary(result))
+    return "\n".join(lines)
+
+
+def to_directory_dict(result: DirectoryDiff) -> dict[str, Any]:
+    return {
+        "old": result.old_dir,
+        "new": result.new_dir,
+        "has_changes": result.has_changes,
+        "summary": {
+            "changed": sum(1 for e in result.entries if e.status == "changed"),
+            "added": sum(1 for e in result.entries if e.status == "added"),
+            "removed": sum(1 for e in result.entries if e.status == "removed"),
+            "breaking": len(result.breaking),
+        },
+        "workbooks": [
+            {
+                "name": entry.name,
+                "status": entry.status,
+                "cell_changes": entry.cell_change_count,
+                "breaking": entry.breaking_count,
+                "diff": to_dict(entry.result) if entry.result is not None else None,
+            }
+            for entry in result.entries
+            if entry.status != "unchanged"
+        ],
+    }
+
+
+def render_directory_json(result: DirectoryDiff) -> str:
+    """Render a directory diff as JSON, with the per-workbook diff nested."""
+    return json.dumps(to_directory_dict(result), indent=2, sort_keys=False)
+
+
+def render_directory_github(result: DirectoryDiff) -> str:
+    """Emit one set of annotations per changed workbook.
+
+    The per-workbook report already knows how to annotate its own sheets, so it
+    is reused as-is; the paths it carries are the real file paths, which is what
+    the annotations need. A run with nothing changed still emits a single notice
+    so the step does not look skipped.
+    """
+    out: list[str] = []
+    for entry in result.entries:
+        if entry.status == "changed" and entry.result is not None:
+            rendered = render_github(entry.result)
+            if rendered:
+                out.append(rendered)
+        elif entry.status == "added":
+            out.append(_annotation("notice", f"{entry.name}: added", "workbook added", entry.name))
+        elif entry.status == "removed":
+            out.append(
+                _annotation("notice", f"{entry.name}: removed", "workbook removed", entry.name)
+            )
+    if not out:
+        return _annotation("notice", "sheetdelta", "no changes")
+    return "\n".join(out)
+
+
+def directory_exit_code(result: DirectoryDiff, fail_on: str) -> int:
+    """The directory-mode twin of :func:`exit_code`."""
+    if fail_on == "never":
+        return 0
+    if fail_on == "any":
+        return 1 if result.has_changes else 0
+    return 1 if result.breaking else 0
 
 
 def exit_code(result: DiffResult, fail_on: str) -> int:

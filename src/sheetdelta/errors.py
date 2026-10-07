@@ -17,3 +17,7 @@ class WorkbookReadError(SheetDeltaError):
 
 class UnsupportedFormatError(WorkbookReadError):
     """The file is a workbook format we do not parse (.xls, .xlsb, ...)."""
+
+
+class DirectoryError(SheetDeltaError):
+    """A directory-mode argument is not a readable directory."""

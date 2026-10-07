@@ -121,21 +121,28 @@ def shift_cell(ref: CellRef, shifts: list[Shift]) -> CellRef | None:
 
 
 @dataclass
-class RowMove:
-    """A whole row that kept its contents but moved to a different row number.
+class Move:
+    """A whole row or column that kept its contents but changed position.
 
-    Excel has no "move row" either: dragging a row rewrites both the vacated and
-    the occupied addresses. Comparing addresses directly reports every cell of
-    every affected row as changed, which buries the fact that nothing in them
-    actually changed -- only their position did.
+    Excel has no "move row" either: dragging a row (or a column) rewrites both
+    the vacated and the occupied addresses. Comparing addresses directly reports
+    every cell of every affected line as changed, which buries the fact that
+    nothing in them actually changed -- only their position did.
     """
 
-    old_row: int
-    new_row: int
+    axis: str  # "row" or "column"
+    old: int
+    new: int
 
     @property
     def label(self) -> str:
-        return f"row {self.old_row} moved to {self.new_row}"
+        noun = "row" if self.axis == "row" else "column"
+        return f"{noun} {self.old} moved to {self.new}"
+
+
+# The pre-axis name, kept because it was exported in 0.5.0. A row move is just
+# a move on the row axis, so callers that imported it keep working.
+RowMove = Move
 
 
 @dataclass
@@ -147,7 +154,7 @@ class SheetChange:
     old_name: str | None = None
     cell_changes: list[CellChange] = field(default_factory=list)
     shifts: list[Shift] = field(default_factory=list)
-    moves: list[RowMove] = field(default_factory=list)
+    moves: list[Move] = field(default_factory=list)
 
     @property
     def breaking_count(self) -> int:
@@ -386,17 +393,17 @@ def _diff_cells(
     old_cells: dict[CellRef, Cell],
     new_cells: dict[CellRef, Cell],
     dependents: dict[CellRef, set[CellRef]],
-) -> tuple[list[CellChange], list[Shift], list[RowMove]]:
+) -> tuple[list[CellChange], list[Shift], list[Move]]:
     """Compare the cells of one sheet, in reading order.
 
-    Returns the changes plus every shift and row move found. The old cells are
-    re-keyed onto their new addresses first, so a cell that only moved is not
-    reported as changed. A sheet can hold more than one insert, so shifts are
-    collected until the remaining difference no longer lines up.
+    Returns the changes plus every shift and row/column move found. The old
+    cells are re-keyed onto their new addresses first, so a cell that only moved
+    is not reported as changed. A sheet can hold more than one insert, so shifts
+    are collected until the remaining difference no longer lines up.
     """
     # A reorder is checked before the shifts, because the shift detector also
-    # explains a moved row as an insert plus a remove. Only an exact permutation
-    # of the rows is claimed as a move, so an insert is never mistaken for one.
+    # explains a moved line as an insert plus a remove. Only an exact permutation
+    # of the lines is claimed as a move, so an insert is never mistaken for one.
     moves = _detect_moves(old_cells, new_cells)
     if moves:
         old_cells = _apply_moves(old_cells, moves)
@@ -436,33 +443,50 @@ def _diff_cells(
 
 def _detect_moves(
     old_cells: dict[CellRef, Cell], new_cells: dict[CellRef, Cell]
-) -> list[RowMove]:
-    """Find rows that only changed position, and can be re-keyed to line up.
+) -> list[Move]:
+    """Find rows or columns that only changed position, to re-key them apart.
 
-    A reorder is written the way Excel writes one: every cell of the moved row
-    is rewritten to its new address, and the rows in between are untouched --
+    A reorder is written the way Excel writes one: every cell of the moved line
+    is rewritten to its new address, and the lines in between are untouched --
     which is also exactly what one insert plus one remove below looks like. The
-    two are told apart by requiring the multiset of row contents to be identical
-    on both sides: a reorder permutes rows, it does not add, remove or edit one.
+    two are told apart by requiring the multiset of line contents to be identical
+    on both sides: a reorder permutes lines, it does not add, remove or edit one.
     When that holds, the move is the more faithful reading; when it does not,
     the insert/remove detector is left to explain the difference.
 
-    A row whose contents appear more than once on either side is ambiguous --
-    two identical rows cannot be told apart -- so it is skipped rather than
-    guessed at, and rows that did not move are never paired.
+    Rows and columns are considered in turn and the first axis that yields a
+    clean permutation wins. A row reorder almost never also looks like a column
+    reorder, but a sheet that is symmetric -- a grid transposed, or a diagonal --
+    can satisfy both; preferring rows matches the reading order the rest of the
+    diff uses and keeps the report stable.
+
+    A line whose contents appear more than once on either side is ambiguous --
+    two identical lines cannot be told apart -- so it is skipped rather than
+    guessed at, and lines that did not move are never paired.
     """
-    old_lines = _line_signatures(old_cells, "row")
-    new_lines = _line_signatures(new_cells, "row")
+    for axis in ("row", "column"):
+        moves = _detect_moves_on_axis(old_cells, new_cells, axis)
+        if moves:
+            return moves
+    return []
+
+
+def _detect_moves_on_axis(
+    old_cells: dict[CellRef, Cell], new_cells: dict[CellRef, Cell], axis: str
+) -> list[Move]:
+    """One axis of :func:`_detect_moves`; empty unless it is a clean permutation."""
+    old_lines = _line_signatures(old_cells, axis)
+    new_lines = _line_signatures(new_cells, axis)
     if old_lines == new_lines:
         return []
 
-    # Only a clean permutation counts. Any added, removed or edited row brings
+    # Only a clean permutation counts. Any added, removed or edited line brings
     # the two multisets out of balance, and the change is left to the cell diff.
     if sorted(old_lines.values()) != sorted(new_lines.values()):
         return []
 
-    # A signature that is not unique on a side is ambiguous: either source row
-    # would fit, and choosing one would be a guess. Those rows are left as
+    # A signature that is not unique on a side is ambiguous: either source line
+    # would fit, and choosing one would be a guess. Those lines are left as
     # changes rather than re-keyed.
     old_counts: dict[tuple[tuple[int, str | None], ...], int] = {}
     for sig in old_lines.values():
@@ -472,27 +496,28 @@ def _detect_moves(
         new_counts[sig] = new_counts.get(sig, 0) + 1
 
     by_sig: dict[tuple[tuple[int, str | None], ...], int] = {}
-    for row, sig in new_lines.items():
+    for line, sig in new_lines.items():
         if old_counts.get(sig, 0) == 1 and new_counts.get(sig, 0) == 1:
-            by_sig[sig] = row
+            by_sig[sig] = line
 
-    moves: list[RowMove] = []
-    for old_row, sig in old_lines.items():
-        new_row = by_sig.get(sig)
-        if new_row is None or new_row == old_row:
+    moves: list[Move] = []
+    for old_line, sig in old_lines.items():
+        new_line = by_sig.get(sig)
+        if new_line is None or new_line == old_line:
             continue
-        moves.append(RowMove(old_row=old_row, new_row=new_row))
-    return sorted(moves, key=lambda m: (m.new_row, m.old_row))
+        moves.append(Move(axis=axis, old=old_line, new=new_line))
+    return sorted(moves, key=lambda m: (m.new, m.old))
 
 
-def _apply_moves(cells: dict[CellRef, Cell], moves: list[RowMove]) -> dict[CellRef, Cell]:
-    """Re-key each moved row's cells to their new row number."""
-    by_old = {move.old_row: move.new_row for move in moves}
+def _apply_moves(cells: dict[CellRef, Cell], moves: list[Move]) -> dict[CellRef, Cell]:
+    """Re-key each moved line's cells to their new row or column number."""
+    by_row = {m.old: m.new for m in moves if m.axis == "row"}
+    by_col = {m.old: m.new for m in moves if m.axis == "column"}
     out: dict[CellRef, Cell] = {}
     for ref, cell in cells.items():
-        new_row = by_old.get(ref.row, ref.row)
-        moved = CellRef(ref.sheet, ref.col, new_row)
-        out[moved] = cell
+        new_row = by_row.get(ref.row, ref.row)
+        new_col = by_col.get(ref.col, ref.col)
+        out[CellRef(ref.sheet, new_col, new_row)] = cell
     return out
 
 

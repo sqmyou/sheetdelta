@@ -17,17 +17,24 @@ downstream total, pass it when the change is cosmetic.
 
 from __future__ import annotations
 
+from .batch import DirectoryDiff, WorkbookEntry, diff_directories
 from .differ import (
     CellChange,
     ChangeKind,
     DiffResult,
+    Move,
     RowMove,
     Severity,
     SheetChange,
     Shift,
     diff_workbooks,
 )
-from .errors import SheetDeltaError, UnsupportedFormatError, WorkbookReadError
+from .errors import (
+    DirectoryError,
+    SheetDeltaError,
+    UnsupportedFormatError,
+    WorkbookReadError,
+)
 from .model import (
     Cell,
     CellIndex,
@@ -46,10 +53,16 @@ from .model import (
 from .reader import read_workbook
 from .references import extract_references
 from .report import (
+    directory_exit_code,
     exit_code,
     render_audit_github,
     render_audit_json,
     render_audit_text,
+    render_directory_github,
+    render_directory_json,
+    render_directory_markdown,
+    render_directory_summary,
+    render_directory_text,
     render_github,
     render_json,
     render_markdown,
@@ -58,7 +71,7 @@ from .report import (
     to_dict,
 )
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "Cell",
@@ -68,6 +81,9 @@ __all__ = [
     "CellRef",
     "ChangeKind",
     "DiffResult",
+    "DirectoryDiff",
+    "DirectoryError",
+    "Move",
     "RangeRef",
     "RowMove",
     "Reference",
@@ -81,17 +97,25 @@ __all__ = [
     "UnsupportedFormatError",
     "VolatileRef",
     "Workbook",
+    "WorkbookEntry",
     "WorkbookReadError",
     "__version__",
     "column_letter",
     "column_number",
+    "diff_directories",
     "diff_workbooks",
+    "directory_exit_code",
     "exit_code",
     "extract_references",
     "read_workbook",
     "render_audit_github",
     "render_audit_json",
     "render_audit_text",
+    "render_directory_github",
+    "render_directory_json",
+    "render_directory_markdown",
+    "render_directory_summary",
+    "render_directory_text",
     "render_github",
     "render_json",
     "render_markdown",

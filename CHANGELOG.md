@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-07
+
+### Added
+
+- **Directory mode.** `sheetdelta diff-dir OLD_DIR NEW_DIR` compares two trees
+  of workbooks and reports what changed anywhere in them. Workbooks are paired
+  by path relative to the root, so `sales/q1.xlsx` and `ops/q1.xlsx` stay
+  distinct and a file moved between folders reads as a remove plus an add. A
+  workbook present on only one side is an add or a remove. The same output
+  formats as `diff` are available (`--json`, `--summary`, `--format
+  {text,json,markdown,github}`) plus `--fail-on` and `--volatile-scope`. The
+  library entry point is `diff_directories`, returning a `DirectoryDiff` of
+  `WorkbookEntry` objects; a path that is not a directory raises the new
+  `DirectoryError`.
+
+### Changed
+
+- **Column moves are detected too.** A dragged column rewrites its cells'
+  addresses exactly as a dragged row does, so the move detector now checks both
+  axes and reports "column 3 moved to 2" alongside the existing row moves.
+  `RowMove` was generalised to `Move` (with an `axis` field); `RowMove` remains
+  as an alias so existing imports keep working.
+
 ## [0.5.0] - 2026-10-08
 
 ### Added

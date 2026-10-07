@@ -105,7 +105,7 @@ comment or a job summary.
         {"axis": "row", "inserted": true, "count": 1, "at": 3, "label": "1 row inserted at row 3"}
       ],
       "moves": [
-        {"old_row": 3, "new_row": 5, "label": "row 3 moved to row 5"}
+        {"axis": "row", "old": 3, "new": 5, "label": "row 3 moved to 5"}
       ],
       "changes": [
         {
@@ -143,6 +143,29 @@ budget_v1.xlsx  ->  budget_v2.xlsx
   Revenue: 1 row inserted at row 3, 2 changes, 1 breaking
   Summary: 1 change
 1 formula; 2 added across 2 edited sheet(s). 1 breaking change.
+```
+
+### Compare two directories of workbooks
+
+```console
+sheetdelta diff-dir models_before/ models_after/
+```
+
+A repository often holds many workbooks rather than one. `diff-dir` walks two
+trees, pairs workbooks by their path relative to each root, and runs the
+ordinary diff on each pair. A workbook present on only one side is reported as
+an add or a remove. Anything that is not `.xlsx` or `.xlsm` is ignored, so a
+stray `.csv` in the tree does not abort the run.
+
+It takes the same `--format`, `--fail-on` and `--volatile-scope` options as
+`diff`, and `--format json` nests the full per-workbook diff under each entry:
+
+```console
+$ sheetdelta diff-dir before/ after/ --format summary
+before/  ->  after/
+  team/revenue.xlsx: changed (2 changes, 1 breaking)
+  team/new.xlsx: added
+2 changed, 1 added of 3 workbook(s); 1 workbook(s) with breaking changes.
 ```
 
 ### Check one workbook
@@ -314,15 +337,22 @@ Being clear about this saves you time.
   dependencies, and why it is fast on large files.
 - **It does not write or edit workbooks.** Read-only, by design.
 - **It only reads `.xlsx` and `.xlsm`.** The old `.xls` and binary `.xlsb`
-  formats are rejected with a clear message rather than half-parsed.
+  formats are rejected with a clear message rather than half-parsed. `.xls` is
+  the pre-2007 binary format and `.xlsb` is a binary re-encoding of the same
+  XML model; both would need a separate parser for no new insight, and guessing
+  at either would produce a wrong diff, which is worse than refusing.
+- **It does not follow a workbook moved between folders in a directory diff.**
+  A path is what identifies a workbook, so `a/book.xlsx` becoming
+  `b/book.xlsx` reads as a remove plus an add, not a move.
 - **It does not read VBA macros** inside `.xlsm` files.
 - **It aligns an insert, and a clean reorder.** Inserting or removing rows or
-  columns is recognised as one event, and so is a pure permutation of the rows:
-  when the same rows are all present and unchanged, only in a different order,
-  the report says which row moved where instead of listing every cell of every
-  affected row as changed. The moment a reorder is mixed with an add, a remove
-  or an edit, it stops being a permutation and is reported as ordinary cell
-  changes -- the tool never claims a move it cannot prove.
+  columns is recognised as one event, and so is a pure permutation of the rows
+  or columns: when the same lines are all present and unchanged, only in a
+  different order, the report says which row or column moved where instead of
+  listing every cell of every affected line as changed. The moment a reorder is
+  mixed with an add, a remove or an edit, it stops being a permutation and is
+  reported as ordinary cell changes -- the tool never claims a move it cannot
+  prove.
 
 ## Using it as a library
 

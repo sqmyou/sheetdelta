@@ -1,7 +1,7 @@
-"""Tests for row reorder detection.
+"""Tests for row and column reorder detection.
 
-A reorder is written the way Excel writes one: every cell of the moved row is
-rewritten to a new address, while the rows in between are untouched. Reporting
+A reorder is written the way Excel writes one: every cell of the moved line is
+rewritten to a new address, while the lines in between are untouched. Reporting
 that as "every cell in these rows changed" buries the fact that only position
 moved.
 """
@@ -57,7 +57,7 @@ def test_a_moved_row_is_reported_as_a_move(tmp_path):
 def test_a_swap_is_two_moves(tmp_path):
     new_rows = [HEADER[0], HEADER[2], HEADER[1], HEADER[3], HEADER[4]]
     result = _diff(tmp_path, HEADER, new_rows)
-    moves = sorted((m.old_row, m.new_row) for m in result.sheet_changes[0].moves)
+    moves = sorted((m.old, m.new) for m in result.sheet_changes[0].moves)
     assert moves == [(2, 3), (3, 2)]
 
 
@@ -126,3 +126,35 @@ def test_report_surfaces_the_move(tmp_path):
     assert "row 4 moved to 2" in render_summary(result)
     assert "row 4 moved to 2" in render_markdown(result)
     assert '"moves"' in render_json(result)
+
+
+def test_a_moved_column_is_reported_as_a_move(tmp_path):
+    # The same problem on the other axis: dragging column C left of B rewrites
+    # those columns' addresses, and without a move this reads as every cell in
+    # columns B and C changing. The rows here hold distinct values so the sheet
+    # is a clean column permutation, not a row one.
+    old_rows = [["h1", "b1", "c1", "d1"], ["h2", "b2", "c2", "d2"], ["h3", "b3", "c3", "d3"]]
+    new_rows = [["h1", "c1", "b1", "d1"], ["h2", "c2", "b2", "d2"], ["h3", "c3", "b3", "d3"]]
+    result = _diff(tmp_path, old_rows, new_rows)
+    sheet = result.sheet_changes[0]
+    moves = sorted((m.axis, m.old, m.new) for m in sheet.moves)
+    assert moves == [("column", 2, 3), ("column", 3, 2)]
+    assert sheet.cell_changes == []
+
+
+def test_a_column_move_is_not_a_row_move(tmp_path):
+    # Guards the axis choice: a rotated block of rows must not be re-keyed as
+    # columns just because some columns happen to share a signature.
+    old_rows = [["a", "1"], ["b", "2"], ["c", "3"]]
+    new_rows = [["c", "3"], ["a", "1"], ["b", "2"]]
+    result = _diff(tmp_path, old_rows, new_rows)
+    assert all(m.axis == "row" for m in result.sheet_changes[0].moves)
+
+
+def test_column_move_report_and_json_carry_the_axis(tmp_path):
+    old_rows = [["h1", "b1", "c1"], ["h2", "b2", "c2"], ["h3", "b3", "c3"]]
+    new_rows = [["h1", "c1", "b1"], ["h2", "c2", "b2"], ["h3", "c3", "b3"]]
+    result = _diff(tmp_path, old_rows, new_rows)
+    assert "column 3 moved to 2" in render_text(result)
+    assert "column 3 moved to 2" in render_markdown(result)
+    assert '"axis": "column"' in render_json(result)

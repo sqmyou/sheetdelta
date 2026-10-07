@@ -30,6 +30,7 @@ src/sheetdelta/
   references.py  pulls cell/range references out of a formula
   reader.py      parses .xlsx (zipfile + xml.etree)
   differ.py      compares two workbooks, builds the dependency graph
+  batch.py       compares two directory trees, one workbook pair at a time
   audit.py       checks one workbook for broken and circular references
   report.py      text and JSON rendering, exit codes
   cli.py         argparse entry point
@@ -91,17 +92,29 @@ src/sheetdelta/
   the match offset means the name is inside a literal and the match is skipped.
   `_first_argument` only returns a literal that is the whole first argument
   (`"A1"` yes, `"A"&B1` no), so a computed target is not shown as a literal one.
-- **A row reorder is a move only when it is a clean permutation.**
+- **A reorder is a move only when it is a clean permutation.**
   `differ._detect_moves` compares the multisets of `_line_signatures`; equal
-  means the rows were only reordered, unequal means the shift detector is left
+  means the lines were only reordered, unequal means the shift detector is left
   to explain it. This matters because an insert looks exactly like a move for
-  every row below it -- requiring the permutation is what stops one insert
+  every line below it -- requiring the permutation is what stops one insert
   being reported as many moves. Moves are detected **before** shifts, and a
   signature that occurs more than once on either side is skipped as ambiguous.
+- **Both axes are checked, rows first.** `_detect_moves` tries the row axis then
+  the column axis and returns the first that is a clean permutation. A row
+  reorder almost never also looks like a column reorder, but a symmetric sheet
+  (a transposed grid, a diagonal) can satisfy both; preferring rows matches the
+  reading order the rest of the diff uses and keeps the report stable. `Move`
+  carries `axis`; `RowMove` is an alias for it, kept because it was exported.
 - **A move is re-keyed, not just reported.** `_apply_moves` rewrites the old
-  cells onto their new rows before the cell comparison, so the moved cells do
-  not also appear as changes. `SheetChange.moves` carries the labels; every
-  renderer (text, summary, markdown, github) and `to_dict` include them.
+  cells onto their new row and column numbers before the cell comparison, so the
+  moved cells do not also appear as changes. `SheetChange.moves` carries the
+  labels; every renderer (text, summary, markdown, github) and `to_dict` include
+  them.
+- **Directory mode pairs by relative path, not file name.** `batch.py` walks
+  both trees keyed on the POSIX path relative to each root, so same-named files
+  in different folders stay distinct and a moved file reads as remove-plus-add.
+  A path that is not a directory raises `DirectoryError` rather than the
+  reader's `WorkbookReadError`, because nothing was opened.
 - **The GitHub annotation format has its own escaping.** `report._escape_github`
   percent-encodes `%`, CR, LF, `:` and `,`; a workflow command is one line, so
   any newline in a message would break it. `--format github` reuses the same

@@ -13,14 +13,21 @@ from collections.abc import Sequence
 
 from . import __version__
 from .audit import audit_workbook
+from .batch import diff_directories
 from .differ import diff_workbooks
 from .errors import SheetDeltaError
 from .reader import read_workbook
 from .report import (
+    directory_exit_code,
     exit_code,
     render_audit_github,
     render_audit_json,
     render_audit_text,
+    render_directory_github,
+    render_directory_json,
+    render_directory_markdown,
+    render_directory_summary,
+    render_directory_text,
     render_github,
     render_json,
     render_markdown,
@@ -70,6 +77,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    diff_dir = sub.add_parser("diff-dir", help="compare two directories of workbooks")
+    diff_dir.add_argument("old", metavar="OLD_DIR", help="the earlier directory")
+    diff_dir.add_argument("new", metavar="NEW_DIR", help="the later directory")
+    dir_output = diff_dir.add_mutually_exclusive_group()
+    dir_output.add_argument("--json", action="store_true", help="alias for --format=json")
+    dir_output.add_argument("--summary", action="store_true", help="alias for --format=summary")
+    dir_output.add_argument(
+        "--format",
+        choices=DIFF_FORMATS,
+        help="output style (default: text); 'github' emits Actions annotations",
+    )
+    diff_dir.add_argument(
+        "--fail-on",
+        choices=FAIL_ON,
+        default="breaking",
+        help="when to exit non-zero (default: breaking)",
+    )
+    diff_dir.add_argument(
+        "--volatile-scope",
+        choices=VOLATILE_SCOPES,
+        default="sheet",
+        help=(
+            "how far a formula that computes its target at runtime (INDIRECT, "
+            "OFFSET) is treated as reaching (default: sheet)"
+        ),
+    )
+
     audit = sub.add_parser("audit", help="inspect one workbook for broken references")
     audit.add_argument("workbook", metavar="FILE.xlsx", help="the workbook to inspect")
     audit.add_argument("--json", action="store_true", help="alias for --format=json")
@@ -102,6 +136,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "diff":
             return _cmd_diff(args)
+        if args.command == "diff-dir":
+            return _cmd_diff_dir(args)
         if args.command == "audit":
             return _cmd_audit(args)
     except SheetDeltaError as exc:
@@ -129,6 +165,24 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     else:
         print(render_text(result))
     return exit_code(result, args.fail_on)
+
+
+def _cmd_diff_dir(args: argparse.Namespace) -> int:
+    result = diff_directories(args.old, args.new, volatile_scope=args.volatile_scope)
+    fmt = args.format or ("json" if args.json else "summary" if args.summary else "text")
+    if fmt == "json":
+        print(render_directory_json(result))
+    elif fmt == "summary":
+        print(render_directory_summary(result))
+    elif fmt == "markdown":
+        print(render_directory_markdown(result))
+    elif fmt == "github":
+        output = render_directory_github(result)
+        if output:
+            print(output)
+    else:
+        print(render_directory_text(result))
+    return directory_exit_code(result, args.fail_on)
 
 
 def _cmd_audit(args: argparse.Namespace) -> int:
