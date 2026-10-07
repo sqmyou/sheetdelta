@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .model import Cell, CellKind, CellRef, RangeRef, Reference, Workbook
+from .model import Cell, CellIndex, CellKind, CellRef, RangeRef, Reference, Workbook
 
 
 class ChangeKind(str, Enum):
@@ -333,19 +333,15 @@ def _dependents(cells: dict[CellRef, Cell]) -> dict[CellRef, set[CellRef]]:
     of itself and is left out.
     """
     out: dict[CellRef, set[CellRef]] = {}
+    index = CellIndex(cells)
     for cell in cells.values():
         if cell.kind is not CellKind.FORMULA or not cell.refs:
             continue
         for reference in cell.refs:
-            for target in _targets_in(reference, cells):
+            for target in index.covered(reference):
                 if target != cell.ref:
                     out.setdefault(target, set()).add(cell.ref)
     return out
-
-
-def _targets_in(reference: Reference, cells: dict[CellRef, Cell]) -> list[CellRef]:
-    """Return the cells in ``cells`` that a reference points at."""
-    return [ref for ref in cells if reference.contains(ref)]
 
 
 def _reachable(ref: CellRef, dependents: dict[CellRef, set[CellRef]]) -> list[CellRef]:

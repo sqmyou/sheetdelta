@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .model import Cell, CellKind, CellRef, Workbook
+from .model import Cell, CellIndex, CellKind, CellRef, Workbook
 
 
 @dataclass
@@ -150,19 +150,17 @@ def _dependency_graph(workbook: Workbook) -> dict[CellRef, set[CellRef]]:
     runs from one sheet into another is still found.
     """
     graph: dict[CellRef, set[CellRef]] = {}
+    index = CellIndex(ref for sheet in workbook.sheets for ref in sheet.cells)
     for sheet in workbook.sheets:
         for cell in sheet.cells.values():
             if cell.kind is not CellKind.FORMULA:
                 continue
             targets: set[CellRef] = set()
             for reference in cell.refs:
-                target_sheet = workbook.sheet_by_name(reference.sheet)
-                if target_sheet is None:
+                if workbook.sheet_by_name(reference.sheet) is None:
                     continue
                 targets.update(
-                    ref
-                    for ref in target_sheet.cells
-                    if ref != cell.ref and reference.contains(ref)
+                    ref for ref in index.covered(reference) if ref != cell.ref
                 )
             if targets:
                 graph[cell.ref] = targets

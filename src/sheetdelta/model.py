@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -72,6 +73,38 @@ class RangeRef:
 
 
 Reference = CellRef | RangeRef
+
+
+class CellIndex:
+    """Finds the cells a reference covers without scanning the whole workbook.
+
+    Both the diff and the audit need "which cells does this formula read", once
+    per reference. Asking every reference against every cell in the file is
+    quadratic, and on a workbook of a few thousand rows it dominates the run.
+    Here a cell lookup goes straight to its address, and a range is walked row by
+    row over only the rows that hold cells -- so ``SUM(A:A)`` costs the cells it
+    actually touches rather than a million probes.
+    """
+
+    def __init__(self, cells: Iterable[CellRef]) -> None:
+        self._by_row: dict[tuple[str, int], list[CellRef]] = {}
+        for ref in cells:
+            self._by_row.setdefault((ref.sheet, ref.row), []).append(ref)
+
+    def covered(self, reference: Reference) -> list[CellRef]:
+        """Every indexed cell that ``reference`` points at."""
+        if isinstance(reference, CellRef):
+            row_cells = self._by_row.get((reference.sheet, reference.row))
+            if not row_cells:
+                return []
+            return [ref for ref in row_cells if ref.col == reference.col]
+
+        out: list[CellRef] = []
+        for row_number in range(reference.min_row, reference.max_row + 1):
+            for ref in self._by_row.get((reference.sheet, row_number), ()):
+                if reference.min_col <= ref.col <= reference.max_col:
+                    out.append(ref)
+        return out
 
 
 def column_letter(col: int) -> str:
