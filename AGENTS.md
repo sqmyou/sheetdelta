@@ -53,6 +53,27 @@ src/sheetdelta/
 - **Shared formulas must be shifted.** Excel stores a repeated formula once and
   refers to it from other cells with relative offsets applied. See
   `shift_formula`.
+- **A row insert is a rewrite, not an edit.** Excel has no "insert row" in the
+  file format; it re-addresses every cell below. `differ._detect_shift` lines
+  the contents up before comparing so the insert reads as one event. The claim
+  is only made when the block below really lines up (`_shifts_agree`), so two
+  unrelated sheets are never aligned by force.
+- **Structured references need the table definition.** `Sales[Amount]` only
+  resolves if the table was read. `references.extract_references` takes a
+  `table_names` map and `TableRef.resolve` turns it into a range. A table name
+  that is not in the map is not treated as a table, which keeps a bare
+  `Foo[Bar]` from looking like a reference.
+- **`__all__` is not checked by any tool.** A name listed there but never
+  imported is a runtime `AttributeError` only. `tests/test_exports.py` walks the
+  list; keep it passing.
+
+## Releasing
+
+Bump `version` in `pyproject.toml` and `__version__` in `src/sheetdelta/__init__.py`,
+add a CHANGELOG entry, then `gh release create vX.Y.Z --notes-file ...`. The
+Release workflow builds and publishes to PyPI on `release: published`. PyPI's
+JSON endpoint can lag the simple index by a minute; confirm with
+`pip install --target` rather than the JSON.
 
 ## Test fixtures
 
