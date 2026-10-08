@@ -76,6 +76,32 @@ src/sheetdelta/
   `tables` map (lowercased name to `Table`) and `TableRef.resolve` turns it into
   a range. A name that is not a known table is not treated as one, which keeps
   a bare `Foo[Bar]` from looking like a reference.
+- **A volatile reference is recorded, not dropped.** `INDIRECT` and `OFFSET`
+  compute their target at runtime, so `references._scan` cannot resolve them.
+  It yields a `VolatileRef` (kind, scope, optional string literal) instead of
+  nothing, and `model.CellIndex.covered` treats it as reaching its whole scope
+  (sheet by default, workbook under `--volatile-scope workbook`). Without this
+  a change behind such a formula looked like it affected nothing.
+  `audit._volatile_refs` reports it separately; it does **not** make the
+  workbook unsound, so `issue_count` and the exit code are unaffected.
+- **A string literal hides a function name.** `references._scan` runs the
+  volatile-finder over the raw formula because the literal argument is the
+  useful part, but a call inside a literal (`"see INDIRECT(a1)"`) must not be
+  one. The stripped text has literals blanked to spaces, so a differing char at
+  the match offset means the name is inside a literal and the match is skipped.
+  `_first_argument` only returns a literal that is the whole first argument
+  (`"A1"` yes, `"A"&B1` no), so a computed target is not shown as a literal one.
+- **A row reorder is a move only when it is a clean permutation.**
+  `differ._detect_moves` compares the multisets of `_line_signatures`; equal
+  means the rows were only reordered, unequal means the shift detector is left
+  to explain it. This matters because an insert looks exactly like a move for
+  every row below it -- requiring the permutation is what stops one insert
+  being reported as many moves. Moves are detected **before** shifts, and a
+  signature that occurs more than once on either side is skipped as ambiguous.
+- **A move is re-keyed, not just reported.** `_apply_moves` rewrites the old
+  cells onto their new rows before the cell comparison, so the moved cells do
+  not also appear as changes. `SheetChange.moves` carries the labels; every
+  renderer (text, summary, markdown, github) and `to_dict` include them.
 - **The GitHub annotation format has its own escaping.** `report._escape_github`
   percent-encodes `%`, CR, LF, `:` and `,`; a workflow command is one line, so
   any newline in a message would break it. `--format github` reuses the same

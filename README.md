@@ -83,7 +83,9 @@ sheetdelta diff old.xlsx new.xlsx --format json
 
 `--json` and `--summary` are kept as aliases for `--format json` and
 `--format summary`. They are mutually exclusive with each other, and with
-`--format`; pick one.
+`--format`; pick one. `diff` also takes `--format markdown`, which renders the
+same report as a Markdown table and list, ready to paste into a pull-request
+comment or a job summary.
 
 ```json
 {
@@ -102,6 +104,9 @@ sheetdelta diff old.xlsx new.xlsx --format json
       "shifts": [
         {"axis": "row", "inserted": true, "count": 1, "at": 3, "label": "1 row inserted at row 3"}
       ],
+      "moves": [
+        {"old_row": 3, "new_row": 5, "label": "row 3 moved to row 5"}
+      ],
       "changes": [
         {
           "cell": "Revenue!D12",
@@ -119,8 +124,8 @@ sheetdelta diff old.xlsx new.xlsx --format json
 }
 ```
 
-`shifts` is always a list, empty when the sheet held no insert or remove, so a
-consumer never has to branch on its presence.
+`shifts` and `moves` are always lists, empty when the sheet held no insert,
+remove or reorder, so a consumer never has to branch on their presence.
 
 ### Summary output
 
@@ -170,6 +175,37 @@ model.xlsx
 A reference to a cell that is simply empty is not reported. That is normal in
 a spreadsheet, and flagging it would make the audit useless on real files.
 
+#### Volatile references
+
+`INDIRECT` and `OFFSET` build their target at runtime, from a string or an
+offset, so there is no way to know which cells they read without evaluating the
+formula. The scanner does not guess, but it does not stay silent either: the
+audit lists each call site as a *volatile reference*, separately from the
+broken and circular ones.
+
+```console
+$ sheetdelta audit model.xlsx
+model.xlsx
+  2 sheet(s), 96 cell(s), 31 formula(s)
+
+No broken references, no circular references.
+
+1 volatile reference(s):
+  ?  D4     INDIRECT(Sheet2!A1)
+        =INDIRECT("Sheet2!A1")
+```
+
+A volatile reference does not make the workbook unsound, so it does not change
+the exit code -- Excel will compute it fine. What it changes is the dependency
+graph: a change made through one cannot be followed, so an audit that only said
+"sound" would be overstating what it can see.
+
+For the graph itself, a volatile reference is treated as conservatively
+reaching its whole sheet, so an edit on that sheet is still reported as
+affecting the volatile cell. `--volatile-scope workbook` widens that to the
+whole workbook on both `diff` and `audit`, at the cost of more changes being
+reported as impacting each other.
+
 ### GitHub Actions
 
 Both subcommands can emit GitHub Actions annotations:
@@ -218,6 +254,7 @@ the diff's code. See `.github/workflows/workbook-diff.yml` for a full example.
 | Sheet added or renamed | info |
 | Sheet removed, and nothing read it | info |
 | Row or column inserted or removed | info |
+| Row moved (a clean reorder) | info |
 
 Formatting alone is not a change. Switching a cell between a date format and a
 plain number shows a different string but leaves the stored value identical, so
@@ -236,6 +273,16 @@ a remove in the same sheet are too. An insert is only claimed when the block
 below it really does line up, so two unrelated sheets are never aligned by
 force. A real edit that moved with the insert is still reported. Shift rows are
 given in the new sheet's numbering, the number a reader sees on screen.
+
+A **row move** is reported as one event too. Reordering rows -- dragging one up,
+or sorting a block while a header stays put -- rewrites the moved rows' addresses
+the same way an insert does, so the same problem arises. When the rows present on
+each side are the same and unchanged, only in a different order, `sheetdelta`
+re-keys the moved rows and reports `row 4 moved to 2` rather than a screenful of
+cell changes. It only reads a difference this way when the rows really are a
+permutation: add, remove or edit even one row and the move no longer holds, and
+the change is reported as ordinary cell changes. A row whose contents appear
+twice is left alone, because which copy moved cannot be known.
 
 A **structured reference** into an Excel table is understood, not treated as
 text. A formula like `SUM(Sales[Amount])` is resolved against the table's
@@ -269,10 +316,13 @@ Being clear about this saves you time.
 - **It only reads `.xlsx` and `.xlsm`.** The old `.xls` and binary `.xlsb`
   formats are rejected with a clear message rather than half-parsed.
 - **It does not read VBA macros** inside `.xlsm` files.
-- **It aligns an insert, but not a sort or a reorder.** Inserting or removing
-  rows or columns is recognised as one event. Moving existing rows around
-  without changing them is not: matching blocks that were shuffled is a
-  different problem and is not attempted.
+- **It aligns an insert, and a clean reorder.** Inserting or removing rows or
+  columns is recognised as one event, and so is a pure permutation of the rows:
+  when the same rows are all present and unchanged, only in a different order,
+  the report says which row moved where instead of listing every cell of every
+  affected row as changed. The moment a reorder is mixed with an add, a remove
+  or an edit, it stops being a permutation and is reported as ordinary cell
+  changes -- the tool never claims a move it cannot prove.
 
 ## Using it as a library
 
@@ -307,6 +357,12 @@ graph asks whether a range contains a cell instead.
 Excel tables are read from the table parts, and a structured reference such as
 `Sales[Amount]` is resolved to the column of cells it names, so the graph sees
 through the table syntax to the addresses underneath.
+
+A call to `INDIRECT` or `OFFSET` is the one case the scan cannot resolve: its
+target is built at runtime. It is recorded as a *volatile* reference rather
+than dropped, so the audit can report it and the graph can treat it as
+reaching the whole sheet. That keeps a change behind such a formula from being
+reported as having no effect.
 
 ## Requirements
 

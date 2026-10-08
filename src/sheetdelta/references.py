@@ -11,10 +11,17 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 
-from .model import CellRef, RangeRef, Reference, Table, TableRef, column_number
+from .model import CellRef, RangeRef, Reference, Table, TableRef, VolatileRef, column_number
 
 # Excel string literals are double-quoted, and a literal quote is doubled.
 _STRING_LITERAL = re.compile(r'"(?:[^"]|"")*"')
+
+# Functions that compute their target at runtime. A static scan cannot say which
+# cells they read, so the reference is recorded as a volatile one instead of
+# being dropped. The argument is captured only to report *why* the target is
+# unknown; a constant string still does not make the target static, because the
+# address it names can be edited without touching the formula.
+_VOLATILE = re.compile(r"(?<![A-Za-z0-9_.])(?P<kind>INDIRECT|OFFSET)\s*\(", re.IGNORECASE)
 
 _REF = re.compile(
     r"""
@@ -142,6 +149,7 @@ def extract_references(
     defined_names: Mapping[str, str] | None = None,
     tables: Mapping[str, Table] | None = None,
     row: int | None = None,
+    volatile_scope: str = "sheet",
 ) -> frozenset[Reference]:
     """Return every cell and range a formula depends on.
 
@@ -152,7 +160,9 @@ def extract_references(
     table name to its definition; a bare name is only read as a structured
     reference when it names a table there, so ``SUM(x)`` is not mistaken for one.
     ``row`` is the row the formula sits in, which a current-row structured
-    reference such as ``[@Amount]`` needs.
+    reference such as ``[@Amount]`` needs. ``volatile_scope`` says how wide a
+    computed reference (``INDIRECT``, ``OFFSET``) is treated as reaching; see
+    :class:`~sheetdelta.model.VolatileRef`.
     """
     return frozenset(
         _scan(
@@ -163,8 +173,39 @@ def extract_references(
             tables=tables or {},
             seen=set(),
             row=row,
+            volatile_scope=volatile_scope,
         )
     )
+
+
+def _first_argument(formula: str, open_paren: int) -> str | None:
+    """The first argument if it is a single string literal, else None.
+
+    ``formula`` is the original text; ``open_paren`` is the offset of the ``(``.
+    Only a lone quoted argument is returned, because it is the one case where
+    the report can show what the formula was reaching for. A computed argument
+    such as ``"A"&B1`` is not a literal target, and an address is left to the
+    ordinary reference scan, so both come back as None.
+    """
+    i = open_paren + 1
+    while i < len(formula) and formula[i].isspace():
+        i += 1
+    if i >= len(formula) or formula[i] != '"':
+        return None
+    j = i + 1
+    while j < len(formula):
+        if formula[j] == '"':
+            if j + 1 < len(formula) and formula[j + 1] == '"':
+                j += 2
+                continue
+            after = j + 1
+            while after < len(formula) and formula[after].isspace():
+                after += 1
+            if after >= len(formula) or formula[after] not in ",)":
+                return None  # part of a larger expression, not a lone literal
+            return formula[i + 1 : j].replace('""', '"')
+        j += 1
+    return None
 
 
 def _scan(
@@ -176,8 +217,20 @@ def _scan(
     tables: Mapping[str, Table],
     seen: set[str],
     row: int | None,
+    volatile_scope: str,
 ) -> Iterable[Reference]:
     text = _strip_string_literals(formula)
+
+    # A computed reference is recorded against the original text, because the
+    # argument that explains it is a string literal the stripped text blanks out.
+    # A match inside a string literal, e.g. "see INDIRECT(a1)", is not a call:
+    # the stripped text has it blanked to spaces at the same offset, so a
+    # differing character there means the name is inside the literal.
+    for match in _VOLATILE.finditer(formula):
+        if match.start() < len(text) and text[match.start()] != formula[match.start()]:
+            continue
+        literal = _first_argument(formula, match.end() - 1)
+        yield VolatileRef(sheet, match.group("kind").upper(), volatile_scope, literal)
 
     for match in _TABLE.finditer(text):
         name = match.group("table")
@@ -218,6 +271,7 @@ def _scan(
                 tables=tables,
                 seen=seen,
                 row=row,
+                volatile_scope=volatile_scope,
             )
 
 

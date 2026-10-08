@@ -18,3 +18,8 @@ def test_every_advertised_name_exists():
 def test_the_new_types_are_exported():
     for name in ("Shift", "Table", "TableRef", "render_summary", "CellIndex"):
         assert hasattr(sheetdelta, name), name
+
+
+def test_the_0_5_types_are_exported():
+    for name in ("RowMove", "VolatileRef", "render_markdown"):
+        assert hasattr(sheetdelta, name), name

@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-08
+
+### Added
+
+- `INDIRECT` and `OFFSET` are now recognised. Their target is computed at
+  runtime, so the dependency graph cannot follow it; before, the scanner found
+  no reference at all and the formula looked like it depended on nothing. Each
+  call site is recorded as a `VolatileRef` and reported by `audit` as a
+  *volatile reference*, separately from broken and circular ones. The graph
+  treats a volatile reference as reaching its whole sheet, so a change behind
+  one is still reported as affecting the formula's cell. `--volatile-scope
+  {sheet,workbook}` on `diff` and `audit` controls how wide that reach is
+  (default `sheet`).
+- `diff --format markdown` renders the report as a Markdown table plus a list,
+  ready for a pull-request comment or a job summary. `render_markdown` is
+  exported from the package root.
+- A clean row reorder is now reported as a move, not as every cell of every
+  affected row. When the rows on both sides are the same and unchanged, only in
+  a different order, `sheetdelta` re-keys them and reports `row 4 moved to 2`.
+  The JSON `moves` list and the text, summary, markdown and github formats all
+  carry it. A reorder mixed with an add, remove or edit is not a permutation and
+  is still reported as ordinary cell changes, so a move is never guessed.
+- `RowMove` and `VolatileRef` are exported from the package root.
+
+### Changed
+
+- The JSON report now has a `moves` list on every sheet, empty when there was
+  no reorder. `shifts` is joined by it, so a consumer reads both as lists.
+
 ## [0.4.0] - 2026-10-07
 
 ### Added
@@ -151,6 +180,7 @@ First release.
   and a range is walked row by row over only the rows that hold cells, so
   `SUM(A:A)` costs the cells it touches rather than a million probes.
 
+[0.5.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.5.0
 [0.4.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.4.0
 [0.3.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.3.0
 [0.2.2]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.2

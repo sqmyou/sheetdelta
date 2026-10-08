@@ -140,7 +140,39 @@ class TableRef:
         return RangeRef(table.sheet, min_col, max_col, min_row, max_row)
 
 
-Reference = CellRef | RangeRef | TableRef
+@dataclass(frozen=True)
+class VolatileRef:
+    """A reference whose target is computed at runtime, e.g. ``INDIRECT("A1")``.
+
+    Excel's ``INDIRECT`` and ``OFFSET`` build a reference from a string or from
+    a base plus offsets, so a static scan cannot say which cells are read. The
+    honest thing is to record that a dependency exists and cannot be pinned
+    down, rather than to silently omit it -- an omitted dependency makes the
+    diff under-report impact and the audit miss a broken reference or a cycle.
+
+    ``scope`` widens what the graph treats the reference as covering, which is
+    the conservative reading: ``cell`` is one computed cell (unknown), ``sheet``
+    the whole sheet, ``workbook`` every sheet. ``kind`` names the function
+    (``INDIRECT`` or ``OFFSET``) and ``literal`` is the constant argument when
+    one was written, which lets the report say *why* the target is unknown.
+    """
+
+    sheet: str
+    kind: str
+    scope: str = "sheet"
+    literal: str | None = None
+
+    @property
+    def a1(self) -> str:
+        return self.kind
+
+    def __str__(self) -> str:
+        if self.literal is not None:
+            return f"{self.kind}({self.literal})"
+        return self.kind
+
+
+Reference = CellRef | RangeRef | TableRef | VolatileRef
 
 
 class CellIndex:
@@ -172,6 +204,20 @@ class CellIndex:
             # A structured reference cannot be resolved without the workbook's
             # table definitions, and this index does not carry them.
             return []
+
+        if isinstance(reference, VolatileRef):
+            # The target is computed at runtime. Widening to the whole sheet (or
+            # workbook) is the conservative reading: it over-reports impact
+            # rather than silently missing it, so a change that might reach this
+            # formula is still followed.
+            if reference.scope == "workbook":
+                return [ref for cells in self._by_row.values() for ref in cells]
+            return [
+                ref
+                for (sheet, _row), cells in self._by_row.items()
+                if sheet == reference.sheet
+                for ref in cells
+            ]
 
         if isinstance(reference, CellRef):
             row_cells = self._by_row.get((reference.sheet, reference.row))

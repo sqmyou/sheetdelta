@@ -48,8 +48,12 @@ _EPOCH_1900 = datetime(1899, 12, 30)
 _EPOCH_1904 = datetime(1904, 1, 1)
 
 
-def read_workbook(path: str) -> Workbook:
+def read_workbook(path: str, *, volatile_scope: str = "sheet") -> Workbook:
     """Parse an .xlsx file into a :class:`Workbook`.
+
+    ``volatile_scope`` says how wide a reference whose target is computed at
+    runtime (``INDIRECT``, ``OFFSET``) is treated as reaching: ``sheet`` (the
+    default) or ``workbook``. See :class:`~sheetdelta.model.VolatileRef`.
 
     Raises :class:`UnsupportedFormatError` for the older binary formats and
     :class:`WorkbookReadError` for anything that is not a readable workbook.
@@ -114,6 +118,7 @@ def read_workbook(path: str) -> Workbook:
                         sheet_map,
                         defined_names,
                         tables,
+                        volatile_scope,
                     ),
                 )
             )
@@ -392,6 +397,7 @@ def _read_cells(
     sheet_map: dict[str, str],
     defined_names: dict[str, str],
     tables: dict[str, Table],
+    volatile_scope: str = "sheet",
 ) -> dict[CellRef, Cell]:
     """Read every non-empty cell of one sheet."""
     cells: dict[CellRef, Cell] = {}
@@ -427,6 +433,7 @@ def _read_cells(
                 defined_names=defined_names,
                 tables=tables,
                 row=ref.row,
+                volatile_scope=volatile_scope,
             )
 
         cells[ref] = Cell(

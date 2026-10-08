@@ -17,7 +17,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .model import Cell, CellIndex, CellKind, CellRef, Reference, TableRef, Workbook
+from .model import (
+    Cell,
+    CellIndex,
+    CellKind,
+    CellRef,
+    Reference,
+    TableRef,
+    VolatileRef,
+    Workbook,
+)
 
 
 @dataclass
@@ -28,6 +37,22 @@ class BrokenReference:
     formula: str
     target: str
     reason: str
+
+
+@dataclass
+class VolatileReference:
+    """A formula whose dependencies are computed at runtime.
+
+    ``INDIRECT`` and ``OFFSET`` build their target from a string or an offset,
+    so the cells they read cannot be known without evaluating the formula. The
+    audit cannot say the workbook is sound when a formula's dependencies are
+    partly invisible, so it reports the call site instead of staying silent.
+    """
+
+    ref: CellRef
+    formula: str
+    kind: str
+    literal: str | None = None
 
 
 @dataclass
@@ -51,6 +76,7 @@ class AuditResult:
     defined_names: dict[str, str] = field(default_factory=dict)
     broken: list[BrokenReference] = field(default_factory=list)
     cycles: list[CircularReference] = field(default_factory=list)
+    volatile: list[VolatileReference] = field(default_factory=list)
 
     @property
     def is_sound(self) -> bool:
@@ -76,16 +102,44 @@ def audit_workbook(workbook: Workbook) -> AuditResult:
             if cell.kind is CellKind.FORMULA:
                 result.formula_count += 1
                 result.broken.extend(_missing_sheets(cell, workbook))
+                result.volatile.extend(_volatile_refs(cell))
 
     result.broken.sort(key=lambda b: (b.ref.sheet, b.ref.row, b.ref.col))
+    result.volatile.sort(key=lambda v: (v.ref.sheet, v.ref.row, v.ref.col, v.kind))
     result.cycles = _find_cycles(workbook)
     return result
+
+
+def _volatile_refs(cell: Cell) -> list[VolatileReference]:
+    """One finding per computed reference in a formula, deduplicated by kind."""
+    out: list[VolatileReference] = []
+    seen: set[tuple[str, str | None]] = set()
+    for reference in sorted(cell.refs, key=str):
+        if not isinstance(reference, VolatileRef):
+            continue
+        key = (reference.kind, reference.literal)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            VolatileReference(
+                ref=cell.ref,
+                formula=cell.formula or "",
+                kind=reference.kind,
+                literal=reference.literal,
+            )
+        )
+    return out
 
 
 def _missing_sheets(cell: Cell, workbook: Workbook) -> list[BrokenReference]:
     """Every reference in one formula that names a sheet or table that is not there."""
     out: list[BrokenReference] = []
     for reference in sorted(cell.refs, key=str):
+        if isinstance(reference, VolatileRef):
+            # A computed reference names no sheet or table to check; it is
+            # reported separately, under volatile references.
+            continue
         if isinstance(reference, TableRef):
             if reference.table.lower() not in workbook.tables:
                 out.append(

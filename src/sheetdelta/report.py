@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 from .audit import AuditResult
-from .differ import CellChange, DiffResult, Severity, SheetChange, Shift
+from .differ import CellChange, DiffResult, RowMove, Severity, SheetChange, Shift
 from .model import CellRef
 
 _MARK = {
@@ -61,6 +61,8 @@ def _render_sheet(sheet: SheetChange) -> list[str]:
     lines = [header]
     for shift in sheet.shifts:
         lines.append(f"  {_MARK[Severity.INFO]} {shift.label}")
+    for move in sheet.moves:
+        lines.append(f"  {_MARK[Severity.INFO]} {move.label}")
     for change in sheet.cell_changes:
         lines.extend(_render_change(change))
     return lines
@@ -119,6 +121,8 @@ def render_summary(result: DiffResult) -> str:
         bits: list[str] = []
         for shift in sheet.shifts:
             bits.append(shift.label)
+        for move in sheet.moves:
+            bits.append(move.label)
         count = len(sheet.cell_changes)
         if count:
             bits.append(f"{count} change{'s' if count != 1 else ''}")
@@ -167,6 +171,68 @@ def _summary(result: DiffResult) -> str:
     return f"{summary}."
 
 
+def _md(text: str) -> str:
+    """Escape a value for a Markdown table cell."""
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def render_markdown(result: DiffResult) -> str:
+    """Render the diff as Markdown, for a pull-request comment or job summary.
+
+    The shape is the same as the text report -- a table of sheets, then the
+    cell detail -- but it is meant to be pasted somewhere that renders Markdown,
+    so the summary is a bolded line and each change is a list item.
+    """
+    lines = ["# Workbook diff", "", f"`{result.old_path}` -> `{result.new_path}`", ""]
+
+    if not result.sheet_changes:
+        lines.append("No changes.")
+        return "\n".join(lines)
+
+    lines.append("| Sheet | Change | Cells | Breaking |")
+    lines.append("| --- | --- | --- | --- |")
+    for sheet in result.sheet_changes:
+        name = _md(sheet.name)
+        if sheet.kind == "renamed":
+            name = f"{_md(sheet.old_name or '')} -> {name}"
+        lines.append(
+            f"| {name} | {sheet.kind} | {len(sheet.cell_changes)} | {sheet.breaking_count} |"
+        )
+
+    for sheet in result.sheet_changes:
+        if sheet.kind == "added":
+            lines.extend(["", f"## Sheet '{_md(sheet.name)}' added"])
+            continue
+        if sheet.kind == "removed":
+            lines.extend(["", f"## Sheet '{_md(sheet.name)}' removed"])
+            continue
+        if sheet.kind == "renamed":
+            header = f"## Sheet '{_md(sheet.old_name or '')}' renamed to '{_md(sheet.name)}'"
+        else:
+            header = f"## Sheet '{_md(sheet.name)}'"
+        lines.extend(["", header, ""])
+        for shift in sheet.shifts:
+            lines.append(f"- {shift.label}")
+        for move in sheet.moves:
+            lines.append(f"- {move.label}")
+        for change in sheet.cell_changes:
+            lines.append(f"- **{change.severity.value}** `{change.ref.a1}` {change.detail}")
+            if change.old is not None and change.new is not None and change.old != change.new:
+                lines.append(f"  - `{_md(change.old)}` -> `{_md(change.new)}`")
+            elif change.old is not None:
+                lines.append(f"  - was `{_md(change.old)}`")
+            elif change.new is not None:
+                lines.append(f"  - now `{_md(change.new)}`")
+            if change.affected:
+                readers = ", ".join(f"`{ref.a1}`" for ref in change.affected[:6])
+                if len(change.affected) > 6:
+                    readers += f", and {len(change.affected) - 6} more"
+                lines.append(f"  - affects {len(change.affected)} cell(s): {readers}")
+
+    lines.extend(["", f"**{_summary(result)}**"])
+    return "\n".join(lines)
+
+
 def render_json(result: DiffResult) -> str:
     """Render the diff as JSON, with stable keys and sorted lists."""
     return json.dumps(to_dict(result), indent=2, sort_keys=False)
@@ -191,7 +257,16 @@ def _sheet_dict(sheet: SheetChange) -> dict[str, Any]:
         "name": sheet.name,
         "old_name": sheet.old_name,
         "shifts": [_shift_dict(shift) for shift in sheet.shifts],
+        "moves": [_move_dict(move) for move in sheet.moves],
         "changes": [_change_dict(change) for change in sheet.cell_changes],
+    }
+
+
+def _move_dict(move: RowMove) -> dict[str, Any]:
+    return {
+        "old_row": move.old_row,
+        "new_row": move.new_row,
+        "label": move.label,
     }
 
 
@@ -249,7 +324,6 @@ def render_audit_text(result: AuditResult) -> str:
     if result.is_sound:
         lines.append("")
         lines.append("No broken references, no circular references.")
-        return "\n".join(lines)
 
     if result.incomplete:
         lines.append("")
@@ -270,6 +344,21 @@ def render_audit_text(result: AuditResult) -> str:
         lines.append(f"{len(result.cycles)} circular reference(s):")
         for cycle in result.cycles:
             lines.append(f"  !! {cycle.display}")
+
+    if result.volatile:
+        lines.append("")
+        lines.append(f"{len(result.volatile)} volatile reference(s):")
+        for volatile in result.volatile:
+            where = f"{volatile.kind}({volatile.literal})" if volatile.literal else volatile.kind
+            lines.append(f"  ?  {volatile.ref.a1:<6} {where}")
+            lines.append(f"        ={volatile.formula}")
+        lines.append("")
+        lines.append(
+            "These formulas compute their target at runtime, so the cells they "
+            "read cannot be known without evaluating them. The dependency graph "
+            "treats them as reaching the whole sheet; a broken reference or cycle "
+            "hidden behind one will not be reported."
+        )
 
     return "\n".join(lines)
 
@@ -328,6 +417,10 @@ def render_github(result: DiffResult) -> str:
             lines.append(
                 _annotation("warning", f"{sheet.name}: {shift.label}", shift.label, result.new_path)
             )
+        for move in sheet.moves:
+            lines.append(
+                _annotation("notice", f"{sheet.name}: {move.label}", move.label, result.new_path)
+            )
         for change in sheet.cell_changes:
             level = _SEVERITY_LEVEL[change.severity]
             message = _change_message(sheet.name, change)
@@ -383,6 +476,17 @@ def render_audit_github(result: AuditResult) -> str:
                 file,
             )
         )
+    for volatile in result.volatile:
+        where = f"{volatile.kind}({volatile.literal})" if volatile.literal else volatile.kind
+        lines.append(
+            _annotation(
+                "warning",
+                f"{volatile.ref.a1}: volatile reference",
+                f"{volatile.ref.a1}: {where} -- target computed at runtime "
+                f"(={volatile.formula})",
+                file,
+            )
+        )
     return "\n".join(lines)
 
 
@@ -406,6 +510,15 @@ def render_audit_json(result: AuditResult) -> str:
                 for b in result.broken
             ],
             "cycles": [[str(ref) for ref in cycle.cells] for cycle in result.cycles],
+            "volatile": [
+                {
+                    "cell": str(v.ref),
+                    "kind": v.kind,
+                    "literal": v.literal,
+                    "formula": f"={v.formula}",
+                }
+                for v in result.volatile
+            ],
         },
         indent=2,
     )

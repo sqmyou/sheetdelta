@@ -21,6 +21,7 @@ from .differ import (
     CellChange,
     ChangeKind,
     DiffResult,
+    RowMove,
     Severity,
     SheetChange,
     Shift,
@@ -37,6 +38,7 @@ from .model import (
     Sheet,
     Table,
     TableRef,
+    VolatileRef,
     Workbook,
     column_letter,
     column_number,
@@ -50,12 +52,13 @@ from .report import (
     render_audit_text,
     render_github,
     render_json,
+    render_markdown,
     render_summary,
     render_text,
     to_dict,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "Cell",
@@ -66,6 +69,7 @@ __all__ = [
     "ChangeKind",
     "DiffResult",
     "RangeRef",
+    "RowMove",
     "Reference",
     "Severity",
     "Sheet",
@@ -75,6 +79,7 @@ __all__ = [
     "Table",
     "TableRef",
     "UnsupportedFormatError",
+    "VolatileRef",
     "Workbook",
     "WorkbookReadError",
     "__version__",
@@ -89,6 +94,7 @@ __all__ = [
     "render_audit_text",
     "render_github",
     "render_json",
+    "render_markdown",
     "render_summary",
     "render_text",
     "to_dict",

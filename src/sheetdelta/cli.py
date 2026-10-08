@@ -23,13 +23,15 @@ from .report import (
     render_audit_text,
     render_github,
     render_json,
+    render_markdown,
     render_summary,
     render_text,
 )
 
 FAIL_ON = ("never", "any", "breaking")
-DIFF_FORMATS = ("text", "json", "summary", "github")
+DIFF_FORMATS = ("text", "json", "summary", "markdown", "github")
 AUDIT_FORMATS = ("text", "json", "github")
+VOLATILE_SCOPES = ("sheet", "workbook")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +60,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="breaking",
         help="when to exit non-zero (default: breaking)",
     )
+    diff.add_argument(
+        "--volatile-scope",
+        choices=VOLATILE_SCOPES,
+        default="sheet",
+        help=(
+            "how far a formula that computes its target at runtime (INDIRECT, "
+            "OFFSET) is treated as reaching (default: sheet)"
+        ),
+    )
 
     audit = sub.add_parser("audit", help="inspect one workbook for broken references")
     audit.add_argument("workbook", metavar="FILE.xlsx", help="the workbook to inspect")
@@ -72,6 +83,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=FAIL_ON,
         default="any",
         help="when to exit non-zero (default: any)",
+    )
+    audit.add_argument(
+        "--volatile-scope",
+        choices=VOLATILE_SCOPES,
+        default="sheet",
+        help=(
+            "how far a formula that computes its target at runtime (INDIRECT, "
+            "OFFSET) is treated as reaching (default: sheet)"
+        ),
     )
 
     return parser
@@ -91,12 +111,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _cmd_diff(args: argparse.Namespace) -> int:
-    result = diff_workbooks(read_workbook(args.old), read_workbook(args.new))
+    result = diff_workbooks(
+        read_workbook(args.old, volatile_scope=args.volatile_scope),
+        read_workbook(args.new, volatile_scope=args.volatile_scope),
+    )
     fmt = args.format or ("json" if args.json else "summary" if args.summary else "text")
     if fmt == "json":
         print(render_json(result))
     elif fmt == "summary":
         print(render_summary(result))
+    elif fmt == "markdown":
+        print(render_markdown(result))
     elif fmt == "github":
         output = render_github(result)
         if output:
@@ -107,7 +132,7 @@ def _cmd_diff(args: argparse.Namespace) -> int:
 
 
 def _cmd_audit(args: argparse.Namespace) -> int:
-    result = audit_workbook(read_workbook(args.workbook))
+    result = audit_workbook(read_workbook(args.workbook, volatile_scope=args.volatile_scope))
     fmt = args.format or ("json" if args.json else "text")
     if fmt == "json":
         print(render_audit_json(result))

@@ -355,6 +355,40 @@ class TestAudit:
         out = capsys.readouterr().out.strip()
         assert out.startswith("::notice")
 
+    def test_format_markdown_renders_a_table(self, tmp_path, capsys):
+        old, new = _pair(tmp_path)
+        code = main(["diff", old, new, "--format", "markdown", "--fail-on", "never"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert out.startswith("# Workbook diff")
+        assert "| Sheet | Change | Cells | Breaking |" in out
+        assert "| Revenue | changed |" in out
+
+    def test_format_markdown_on_no_changes_says_so(self, tmp_path, capsys):
+        path = str(tmp_path / "same.xlsx")
+        write_workbook(path, [FakeSheet("S", [FakeCell("A1", value="1")])])
+        main(["diff", path, path, "--format", "markdown", "--fail-on", "never"])
+        out = capsys.readouterr().out
+        assert "No changes." in out
+
+    def test_volatile_scope_is_an_option_on_both_commands(self, tmp_path, capsys):
+        path = str(tmp_path / "v.xlsx")
+        write_workbook(
+            path,
+            [
+                FakeSheet(
+                    "S",
+                    [FakeCell("A1", value="1"), FakeCell("B1", formula='INDIRECT("A1")', value="1")],
+                )
+            ],
+        )
+        code = main(["audit", path, "--volatile-scope", "workbook", "--fail-on", "never"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "INDIRECT(A1)" in out
+        # The same workbook diffs against itself with either scope.
+        assert main(["diff", path, path, "--volatile-scope", "workbook", "--fail-on", "never"]) == 0
+
     def test_audit_format_github_reports_cycles(self, tmp_path, capsys):
         path = str(tmp_path / "cycle.xlsx")
         write_workbook(

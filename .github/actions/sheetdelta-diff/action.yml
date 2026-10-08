@@ -25,7 +25,7 @@ inputs:
     required: false
     default: breaking
   version:
-    description: The sheetdelta requirement to install, for example "sheetdelta==0.4.0".
+    description: The sheetdelta requirement to install, for example "sheetdelta==0.5.0".
     required: false
     default: sheetdelta
   python-version:

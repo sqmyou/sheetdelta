@@ -22,6 +22,7 @@ from .model import (
     Sheet,
     Table,
     TableRef,
+    VolatileRef,
     Workbook,
 )
 
@@ -120,6 +121,24 @@ def shift_cell(ref: CellRef, shifts: list[Shift]) -> CellRef | None:
 
 
 @dataclass
+class RowMove:
+    """A whole row that kept its contents but moved to a different row number.
+
+    Excel has no "move row" either: dragging a row rewrites both the vacated and
+    the occupied addresses. Comparing addresses directly reports every cell of
+    every affected row as changed, which buries the fact that nothing in them
+    actually changed -- only their position did.
+    """
+
+    old_row: int
+    new_row: int
+
+    @property
+    def label(self) -> str:
+        return f"row {self.old_row} moved to {self.new_row}"
+
+
+@dataclass
 class SheetChange:
     """A sheet added, removed, renamed or edited between the two workbooks."""
 
@@ -128,6 +147,7 @@ class SheetChange:
     old_name: str | None = None
     cell_changes: list[CellChange] = field(default_factory=list)
     shifts: list[Shift] = field(default_factory=list)
+    moves: list[RowMove] = field(default_factory=list)
 
     @property
     def breaking_count(self) -> int:
@@ -177,7 +197,7 @@ def diff_workbooks(old: Workbook, new: Workbook) -> DiffResult:
         old_sheet = old.sheet_by_name(old_name)
         new_sheet = new.sheet_by_name(new_name)
         assert old_sheet is not None and new_sheet is not None
-        cell_changes, shifts = _diff_cells(
+        cell_changes, shifts, moves = _diff_cells(
             _rehome(old_sheet.cells, old_name, new_name),
             new_sheet.cells,
             dependents,
@@ -189,6 +209,7 @@ def diff_workbooks(old: Workbook, new: Workbook) -> DiffResult:
                 old_name=old_name,
                 cell_changes=cell_changes,
                 shifts=shifts,
+                moves=moves,
             )
         )
 
@@ -213,8 +234,8 @@ def diff_workbooks(old: Workbook, new: Workbook) -> DiffResult:
             continue
         new_sheet = new.sheet_by_name(name)
         assert new_sheet is not None
-        changes, shifts = _diff_cells(old_sheet.cells, new_sheet.cells, dependents)
-        if changes or shifts:
+        changes, shifts, moves = _diff_cells(old_sheet.cells, new_sheet.cells, dependents)
+        if changes or shifts or moves:
             result.sheet_changes.append(
                 SheetChange(
                     kind="changed",
@@ -222,6 +243,7 @@ def diff_workbooks(old: Workbook, new: Workbook) -> DiffResult:
                     old_name=name,
                     cell_changes=changes,
                     shifts=shifts,
+                    moves=moves,
                 )
             )
 
@@ -353,6 +375,8 @@ def _rehome_ref(reference: Reference, old_name: str, new_name: str) -> Reference
         return reference
     if isinstance(reference, CellRef):
         return CellRef(new_name, reference.col, reference.row)
+    if isinstance(reference, VolatileRef):
+        return VolatileRef(new_name, reference.kind, reference.scope, reference.literal)
     return RangeRef(
         new_name, reference.min_col, reference.max_col, reference.min_row, reference.max_row
     )
@@ -362,14 +386,21 @@ def _diff_cells(
     old_cells: dict[CellRef, Cell],
     new_cells: dict[CellRef, Cell],
     dependents: dict[CellRef, set[CellRef]],
-) -> tuple[list[CellChange], list[Shift]]:
+) -> tuple[list[CellChange], list[Shift], list[RowMove]]:
     """Compare the cells of one sheet, in reading order.
 
-    Returns the changes plus every shift found. The old cells are re-keyed onto
-    their new addresses first, so a cell that only moved is not reported as
-    changed. A sheet can hold more than one insert, so shifts are collected
-    until the remaining difference no longer lines up.
+    Returns the changes plus every shift and row move found. The old cells are
+    re-keyed onto their new addresses first, so a cell that only moved is not
+    reported as changed. A sheet can hold more than one insert, so shifts are
+    collected until the remaining difference no longer lines up.
     """
+    # A reorder is checked before the shifts, because the shift detector also
+    # explains a moved row as an insert plus a remove. Only an exact permutation
+    # of the rows is claimed as a move, so an insert is never mistaken for one.
+    moves = _detect_moves(old_cells, new_cells)
+    if moves:
+        old_cells = _apply_moves(old_cells, moves)
+
     raw = _detect_shifts(old_cells, new_cells)
     if raw:
         old_cells = _apply_shifts(old_cells, raw)
@@ -400,7 +431,69 @@ def _diff_cells(
         elif old is not None and new is not None:
             changes.extend(_compare_cell(ref, old, new, dependents))
 
-    return changes, shifts
+    return changes, shifts, moves
+
+
+def _detect_moves(
+    old_cells: dict[CellRef, Cell], new_cells: dict[CellRef, Cell]
+) -> list[RowMove]:
+    """Find rows that only changed position, and can be re-keyed to line up.
+
+    A reorder is written the way Excel writes one: every cell of the moved row
+    is rewritten to its new address, and the rows in between are untouched --
+    which is also exactly what one insert plus one remove below looks like. The
+    two are told apart by requiring the multiset of row contents to be identical
+    on both sides: a reorder permutes rows, it does not add, remove or edit one.
+    When that holds, the move is the more faithful reading; when it does not,
+    the insert/remove detector is left to explain the difference.
+
+    A row whose contents appear more than once on either side is ambiguous --
+    two identical rows cannot be told apart -- so it is skipped rather than
+    guessed at, and rows that did not move are never paired.
+    """
+    old_lines = _line_signatures(old_cells, "row")
+    new_lines = _line_signatures(new_cells, "row")
+    if old_lines == new_lines:
+        return []
+
+    # Only a clean permutation counts. Any added, removed or edited row brings
+    # the two multisets out of balance, and the change is left to the cell diff.
+    if sorted(old_lines.values()) != sorted(new_lines.values()):
+        return []
+
+    # A signature that is not unique on a side is ambiguous: either source row
+    # would fit, and choosing one would be a guess. Those rows are left as
+    # changes rather than re-keyed.
+    old_counts: dict[tuple[tuple[int, str | None], ...], int] = {}
+    for sig in old_lines.values():
+        old_counts[sig] = old_counts.get(sig, 0) + 1
+    new_counts: dict[tuple[tuple[int, str | None], ...], int] = {}
+    for sig in new_lines.values():
+        new_counts[sig] = new_counts.get(sig, 0) + 1
+
+    by_sig: dict[tuple[tuple[int, str | None], ...], int] = {}
+    for row, sig in new_lines.items():
+        if old_counts.get(sig, 0) == 1 and new_counts.get(sig, 0) == 1:
+            by_sig[sig] = row
+
+    moves: list[RowMove] = []
+    for old_row, sig in old_lines.items():
+        new_row = by_sig.get(sig)
+        if new_row is None or new_row == old_row:
+            continue
+        moves.append(RowMove(old_row=old_row, new_row=new_row))
+    return sorted(moves, key=lambda m: (m.new_row, m.old_row))
+
+
+def _apply_moves(cells: dict[CellRef, Cell], moves: list[RowMove]) -> dict[CellRef, Cell]:
+    """Re-key each moved row's cells to their new row number."""
+    by_old = {move.old_row: move.new_row for move in moves}
+    out: dict[CellRef, Cell] = {}
+    for ref, cell in cells.items():
+        new_row = by_old.get(ref.row, ref.row)
+        moved = CellRef(ref.sheet, ref.col, new_row)
+        out[moved] = cell
+    return out
 
 
 def _detect_shifts(
