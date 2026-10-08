@@ -192,6 +192,57 @@ def test_cross_sheet_impact_is_followed(tmp_path):
     assert [str(r) for r in change.affected] == ["B!A1"]
 
 
+def test_removed_sheet_that_feeds_another_sheet_is_breaking(tmp_path):
+    """Deleting a sheet another sheet reads must fail a breaking check."""
+    old = _book(
+        tmp_path,
+        "old.xlsx",
+        [
+            FakeSheet("Data", [FakeCell("A1", value="1")]),
+            FakeSheet("Summary", [FakeCell("A1", formula="Data!A1*2", value="2")]),
+        ],
+    )
+    new = _book(
+        tmp_path,
+        "new.xlsx",
+        [FakeSheet("Summary", [FakeCell("A1", formula="Data!A1*2", value="2")])],
+    )
+    result = diff_workbooks(old, new)
+    assert result.breaking, "a removed sheet with readers must produce a breaking change"
+    change = result.breaking[0]
+    assert change.kind is ChangeKind.REMOVED
+    assert [str(r) for r in change.affected] == ["Summary!A1"]
+
+
+def test_removed_sheet_nobody_reads_stays_info(tmp_path):
+    old = _book(tmp_path, "old.xlsx", [FakeSheet("Junk", [FakeCell("A1", value="1")])])
+    new = _book(tmp_path, "new.xlsx", [FakeSheet("Keep", [FakeCell("A1", value="1")])])
+    result = diff_workbooks(old, new)
+    assert result.breaking == []
+
+
+def test_number_format_only_change_is_not_a_value_change(tmp_path):
+    """The same serial shown as a date and as a number is not a change."""
+    old = _book(tmp_path, "old.xlsx", [FakeSheet("S", [FakeCell("A1", value="45200", style=14)])],
+                date_styles=(14,))
+    new = _book(tmp_path, "new.xlsx", [FakeSheet("S", [FakeCell("A1", value="45200")])],
+                date_styles=(14,))
+    assert diff_workbooks(old, new).cell_changes == []
+
+
+def test_one_and_one_point_zero_are_the_same_value(tmp_path):
+    """Different writers may spell 1 as 1.0; that is not a change."""
+    old = _book(tmp_path, "old.xlsx", [FakeSheet("S", [FakeCell("A1", value="1")])])
+    new = _book(tmp_path, "new.xlsx", [FakeSheet("S", [FakeCell("A1", value="1.0")])])
+    assert diff_workbooks(old, new).cell_changes == []
+
+
+def test_a_real_number_change_is_still_reported(tmp_path):
+    old = _book(tmp_path, "old.xlsx", [FakeSheet("S", [FakeCell("A1", value="1")])])
+    new = _book(tmp_path, "new.xlsx", [FakeSheet("S", [FakeCell("A1", value="2")])])
+    assert [c.kind for c in diff_workbooks(old, new).cell_changes] == [ChangeKind.VALUE]
+
+
 def test_a_formula_reading_its_own_cell_is_not_a_dependency(tmp_path):
     """SUM(D2:D13) written in D12 includes D12; it must not list itself."""
     old = _book(

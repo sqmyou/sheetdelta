@@ -19,6 +19,7 @@ from .model import (
     CellRef,
     RangeRef,
     Reference,
+    Sheet,
     Table,
     TableRef,
     Workbook,
@@ -159,7 +160,12 @@ def diff_workbooks(old: Workbook, new: Workbook) -> DiffResult:
         if name in renamed_from or new.sheet_by_name(name) is not None:
             continue
         result.sheet_changes.append(
-            SheetChange(kind="removed", name=name, old_name=name)
+            SheetChange(
+                kind="removed",
+                name=name,
+                old_name=name,
+                cell_changes=_removal_changes(old.sheet_by_name(name), dependents),
+            )
         )
 
     for name in new.sheet_names:
@@ -209,6 +215,7 @@ def _global_dependents(
                     formula=cell.formula,
                     cached_value=cell.cached_value,
                     value_type=cell.value_type,
+                    raw_value=cell.raw_value,
                     refs=frozenset(
                         _rehome_ref(reference, sheet.name, target) for reference in cell.refs
                     ),
@@ -395,17 +402,17 @@ def _detect_axis(
 
 def _line_signatures(
     cells: dict[CellRef, Cell], axis: str
-) -> dict[int, tuple[tuple[int, str], ...]]:
+) -> dict[int, tuple[tuple[int, str | None], ...]]:
     """Describe each row (or column) by what it holds, ignoring its address.
 
     Two lines with the same signature hold the same contents, which is what
     makes them comparable across the shift.
     """
-    gathered: dict[int, list[tuple[int, str]]] = {}
+    gathered: dict[int, list[tuple[int, str | None]]] = {}
     for ref, cell in cells.items():
         line = ref.row if axis == "row" else ref.col
         other = ref.col if axis == "row" else ref.row
-        gathered.setdefault(line, []).append((other, cell.display))
+        gathered.setdefault(line, []).append((other, cell.signature))
     return {line: tuple(sorted(items)) for line, items in gathered.items()}
 
 
@@ -426,7 +433,7 @@ def _shifts_agree(
         if line < shift.at:
             continue
         new = new_cells.get(ref)
-        if new is not None and new.display == old.display:
+        if new is not None and new.signature == old.signature:
             matched += 1
         else:
             mismatched += 1
@@ -472,26 +479,60 @@ def _compare_cell(
         # old number side by side, which is exactly how a wrong total ships. A
         # file that never held a cached value is a different case: it is not
         # stale, it was never calculated, so it stays a plain formula change.
-        if old.cached_value is not None and old.cached_value == new.cached_value:
+        if old.value_signature is not None and old.value_signature == new.value_signature:
             change.kind = ChangeKind.STALE
             change.detail = "formula changed, cached value did not move (not recalculated)"
         return [change]
 
-    if old.cached_value != new.cached_value:
+    if old.signature != new.signature:
         affected = _reachable(ref, dependents)
         return [
             CellChange(
                 ref=ref,
                 kind=ChangeKind.VALUE,
                 severity=Severity.BREAKING if affected else Severity.WARNING,
-                old=old.cached_value,
-                new=new.cached_value,
+                old=old.display,
+                new=new.display,
                 detail="value changed",
                 affected=affected,
             )
         ]
 
     return []
+
+
+def _removal_changes(
+    sheet: Sheet | None, dependents: dict[CellRef, set[CellRef]]
+) -> list[CellChange]:
+    """The cells of a removed sheet that other cells still read.
+
+    A removed sheet is reported as a sheet-level removal with no cell detail,
+    which hides the real risk. When another sheet consumed a cell on it, Excel
+    rewrites that reader to ``#REF!``; a file written by some other tool keeps
+    the stale reference instead, and the diff of the two files shows nothing
+    wrong. Reporting the removed cell as breaking, with the readers it strands,
+    is what makes ``--fail-on breaking`` catch the silent case.
+    """
+    if sheet is None:
+        return []
+    out: list[CellChange] = []
+    for ref in sorted(sheet.cells, key=lambda r: (r.sheet, r.row, r.col)):
+        affected = _reachable(ref, dependents)
+        if not affected:
+            continue
+        cell = sheet.cells[ref]
+        out.append(
+            CellChange(
+                ref=ref,
+                kind=ChangeKind.REMOVED,
+                severity=Severity.BREAKING,
+                old=cell.display,
+                new=None,
+                detail=f"cell removed with sheet '{sheet.name}'",
+                affected=affected,
+            )
+        )
+    return out
 
 
 def _dependents(

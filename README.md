@@ -118,6 +118,7 @@ sheetdelta diff old.xlsx new.xlsx --summary
 
 The full report is what you want on a laptop. In a CI log you often want the
 shape of the change and nothing else: one line per sheet, with the counts.
+`--json` and `--summary` are mutually exclusive; pick one.
 
 ```console
 $ sheetdelta diff budget_v1.xlsx budget_v2.xlsx --summary
@@ -164,11 +165,18 @@ a spreadsheet, and flagging it would make the audit useless on real files.
 | Formula changed, and other cells read it | breaking |
 | Value changed, and other cells read it | breaking |
 | Cell deleted, and other cells read it | breaking |
+| Sheet removed, and a cell another sheet read | breaking |
 | Formula or value changed, nothing reads it | warning |
 | Formula changed but the cached value did not move | stale |
 | New cell | info |
-| Sheet added, removed or renamed | info |
+| Sheet added or renamed | info |
+| Sheet removed, and nothing read it | info |
 | Row or column inserted or removed | info |
+
+Formatting alone is not a change. Switching a cell between a date format and a
+plain number shows a different string but leaves the stored value identical, so
+it is not reported. Likewise `1` and `1.0` compare equal. Reports still show the
+formatted text.
 
 A **row or column insert** is reported as one event, not as every cell below
 it. Excel has no "insert row" in the file format: it rewrites each cell below

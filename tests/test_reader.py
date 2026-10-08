@@ -211,6 +211,49 @@ class TestShift:
             == "='O'!A1 + C2"
         )
 
+    def test_cross_sheet_range_endpoint_does_not_move(self):
+        """Both endpoints of 'Other'!A1:B2 are anchored, so neither shifts."""
+        assert (
+            shift_formula("='Other'!A1:B2+C1", CellRef("S", 1, 1), CellRef("S", 2, 1))
+            == "='Other'!A1:B2+D1"
+        )
+
+    def test_sheet_name_that_looks_like_a_cell_does_not_move(self):
+        """A sheet called Q1 must not have Q1 itself shifted as if it were a cell."""
+        assert (
+            shift_formula("Q1!A1+Q2", CellRef("S", 1, 1), CellRef("S", 2, 1)) == "Q1!A1+R2"
+        )
+
+
+def test_scoped_defined_names_do_not_keep_the_last_definition(tmp_path):
+    """The same name scoped to two sheets must not silently collapse to one."""
+    import zipfile
+
+    path = str(tmp_path / "scoped.xlsx")
+    write_workbook(
+        path,
+        [
+            FakeSheet("One", [FakeCell("A1", value="1"), FakeCell("B1", formula="Tax*2", value="2")]),
+            FakeSheet("Two", [FakeCell("B2", value="2")]),
+        ],
+    )
+    with zipfile.ZipFile(path) as archive:
+        parts = {name: archive.read(name) for name in archive.namelist()}
+    workbook_xml = parts["xl/workbook.xml"].decode()
+    names = (
+        '<definedNames>'
+        '<definedName name="Tax" localSheetId="0">One!$A$1</definedName>'
+        '<definedName name="Tax" localSheetId="1">Two!$B$2</definedName>'
+        '</definedNames>'
+    )
+    parts["xl/workbook.xml"] = workbook_xml.replace("</workbook>", names + "</workbook>").encode()
+    with zipfile.ZipFile(path, "w") as out:
+        for name, data in parts.items():
+            out.writestr(name, data)
+
+    workbook = read_workbook(path)
+    assert "Tax".lower() not in workbook.defined_names
+
 
 def test_column_letters_round_trip():
     for number in (1, 26, 27, 52, 703, 16384):

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from sheetdelta.audit import audit_workbook
 from sheetdelta.cli import main
 from sheetdelta.differ import diff_workbooks
@@ -301,3 +303,20 @@ class TestAudit:
         payload = json.loads(capsys.readouterr().out)
         assert payload["sound"] is False
         assert payload["cycles"]
+
+    def test_a_long_dependency_chain_does_not_recurse_to_death(self, tmp_path):
+        """A running-balance column chains thousands of cells; it must not crash."""
+        depth = 4000
+        cells = [FakeCell(f"A{i}", formula=f"A{i + 1}+1", value=str(i)) for i in range(1, depth)]
+        cells.append(FakeCell(f"A{depth}", value="0"))
+        path = str(tmp_path / "chain.xlsx")
+        write_workbook(path, [FakeSheet("S", cells)])
+        assert audit_workbook(read_workbook(path)).is_sound
+
+    def test_json_and_summary_are_mutually_exclusive(self, tmp_path):
+        path = str(tmp_path / "a.xlsx")
+        other = str(tmp_path / "b.xlsx")
+        write_workbook(path, [FakeSheet("S", [FakeCell("A1", value="1")])])
+        write_workbook(other, [FakeSheet("S", [FakeCell("A1", value="2")])])
+        with pytest.raises(SystemExit):
+            main(["diff", path, other, "--json", "--summary"])

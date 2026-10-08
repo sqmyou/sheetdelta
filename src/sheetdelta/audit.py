@@ -114,46 +114,60 @@ def _find_cycles(workbook: Workbook) -> list[CircularReference]:
 
     Walks the dependency graph depth-first, tracking the cells on the current
     path. Reaching a cell already on the path closes a cycle, and the slice of
-    the path from that cell onwards is the loop to report.
+    the path from that cell onwards is the loop to report. The walk keeps its
+    own stack rather than recursing: a running-balance column chains thousands
+    of cells deep and would otherwise hit Python's recursion limit.
     """
     graph = _dependency_graph(workbook)
     found: list[CircularReference] = []
     seen: set[CellRef] = set()
     reported: set[frozenset[CellRef]] = set()
 
-    for start in sorted(graph, key=lambda r: (r.sheet, r.row, r.col)):
+    for start in sorted(graph, key=_order):
         if start in seen:
             continue
-        _walk(start, graph, [], set(), seen, found, reported)
+        _walk(start, graph, seen, found, reported)
 
     return found
 
 
+def _order(ref: CellRef) -> tuple[str, int, int]:
+    return (ref.sheet, ref.row, ref.col)
+
+
 def _walk(
-    node: CellRef,
+    start: CellRef,
     graph: dict[CellRef, set[CellRef]],
-    path: list[CellRef],
-    on_path: set[CellRef],
     seen: set[CellRef],
     found: list[CircularReference],
     reported: set[frozenset[CellRef]],
 ) -> None:
-    path.append(node)
-    on_path.add(node)
+    path: list[CellRef] = [start]
+    on_path: set[CellRef] = {start}
+    stack: list[tuple[CellRef, list[CellRef], int]] = [
+        (start, sorted(graph.get(start, ()), key=_order), 0)
+    ]
 
-    for neighbour in sorted(graph.get(node, ()), key=lambda r: (r.sheet, r.row, r.col)):
-        if neighbour in on_path:
-            cycle = path[path.index(neighbour) :]
-            key = frozenset(cycle)
-            if key not in reported:
-                reported.add(key)
-                found.append(CircularReference(cells=[*cycle, neighbour]))
-        elif neighbour not in seen:
-            _walk(neighbour, graph, path, on_path, seen, found, reported)
-
-    path.pop()
-    on_path.discard(node)
-    seen.add(node)
+    while stack:
+        node, neighbours, index = stack[-1]
+        if index < len(neighbours):
+            stack[-1] = (node, neighbours, index + 1)
+            neighbour = neighbours[index]
+            if neighbour in on_path:
+                cycle = path[path.index(neighbour) :]
+                key = frozenset(cycle)
+                if key not in reported:
+                    reported.add(key)
+                    found.append(CircularReference(cells=[*cycle, neighbour]))
+            elif neighbour not in seen:
+                path.append(neighbour)
+                on_path.add(neighbour)
+                stack.append((neighbour, sorted(graph.get(neighbour, ()), key=_order), 0))
+        else:
+            stack.pop()
+            path.pop()
+            on_path.discard(node)
+            seen.add(node)
 
 
 def _dependency_graph(workbook: Workbook) -> dict[CellRef, set[CellRef]]:

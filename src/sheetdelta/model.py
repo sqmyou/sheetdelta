@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 
 
@@ -219,6 +220,7 @@ class Cell:
     cached_value: str | None = None
     value_type: str | None = None
     refs: frozenset[Reference] = field(default_factory=frozenset)
+    raw_value: str | None = None
 
     @property
     def display(self) -> str:
@@ -226,6 +228,37 @@ class Cell:
         if self.kind is CellKind.FORMULA:
             return f"={self.formula}"
         return self.cached_value if self.cached_value is not None else ""
+
+    @property
+    def signature(self) -> str | None:
+        """A canonical key for the whole cell, ignoring how it is displayed.
+
+        A formula is keyed by its text; a value by its normalized number. Used
+        where two cells must be judged the same cell -- lining up a shift, or
+        deciding a value changed.
+        """
+        if self.kind is CellKind.FORMULA:
+            return f"={self.formula}"
+        return self.value_signature
+
+    @property
+    def value_signature(self) -> str | None:
+        """A canonical key for the cached value alone, ignoring its format.
+
+        Numbers are normalized so ``1`` and ``1.0`` read as the same, and a
+        bare number is compared as stored rather than as its formatted text:
+        flipping a cell from a date format to a plain one changes the displayed
+        string while the underlying serial is identical.
+        """
+        raw = self.raw_value if self.raw_value is not None else self.cached_value
+        if raw is None:
+            return None
+        if self.value_type == "date":
+            return raw
+        try:
+            return format(Decimal(raw).normalize(), "f")
+        except (InvalidOperation, ValueError):
+            return raw
 
 
 @dataclass(frozen=True)

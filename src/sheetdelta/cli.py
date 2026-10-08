@@ -8,16 +8,22 @@ than implied.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections.abc import Sequence
 
 from . import __version__
-from .audit import AuditResult, audit_workbook
+from .audit import audit_workbook
 from .differ import diff_workbooks
 from .errors import SheetDeltaError
 from .reader import read_workbook
-from .report import exit_code, render_json, render_summary, render_text
+from .report import (
+    exit_code,
+    render_audit_json,
+    render_audit_text,
+    render_json,
+    render_summary,
+    render_text,
+)
 
 FAIL_ON = ("never", "any", "breaking")
 
@@ -34,8 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     diff = sub.add_parser("diff", help="compare two workbooks")
     diff.add_argument("old", metavar="OLD.xlsx", help="the earlier workbook")
     diff.add_argument("new", metavar="NEW.xlsx", help="the later workbook")
-    diff.add_argument("--json", action="store_true", help="emit JSON instead of text")
-    diff.add_argument(
+    output = diff.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    output.add_argument(
         "--summary",
         action="store_true",
         help="print counts per sheet with no cell detail, for a CI log",
@@ -93,66 +100,4 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     if args.fail_on == "never":
         return 0
     return 1 if result.issue_count else 0
-
-
-def render_audit_text(result: AuditResult) -> str:
-    """Render an audit for a human."""
-    lines = [f"{result.path}"]
-    lines.append(
-        f"  {len(result.sheets)} sheet(s), {result.cell_count} cell(s), "
-        f"{result.formula_count} formula(s)"
-    )
-    if result.defined_names:
-        lines.append(f"  {len(result.defined_names)} defined name(s)")
-
-    if result.is_sound:
-        lines.append("")
-        lines.append("No broken references, no circular references.")
-        return "\n".join(lines)
-
-    if result.incomplete:
-        lines.append("")
-        lines.append(f"{len(result.incomplete)} worksheet(s) could not be read:")
-        for name in result.incomplete:
-            lines.append(f"  !! {name}: part missing or malformed (result is incomplete)")
-
-    if result.broken:
-        lines.append("")
-        lines.append(f"{len(result.broken)} broken reference(s):")
-        for broken in result.broken:
-            lines.append(f"  !! {broken.ref.a1:<6} {broken.target}")
-            lines.append(f"        {broken.reason}")
-            lines.append(f"        ={broken.formula}")
-
-    if result.cycles:
-        lines.append("")
-        lines.append(f"{len(result.cycles)} circular reference(s):")
-        for cycle in result.cycles:
-            lines.append(f"  !! {cycle.display}")
-
-    return "\n".join(lines)
-
-
-def render_audit_json(result: AuditResult) -> str:
-    return json.dumps(
-        {
-            "path": result.path,
-            "sheets": result.sheets,
-            "cells": result.cell_count,
-            "formulas": result.formula_count,
-            "sound": result.is_sound,
-            "incomplete": result.incomplete,
-            "broken": [
-                {
-                    "cell": str(b.ref),
-                    "target": b.target,
-                    "reason": b.reason,
-                    "formula": f"={b.formula}",
-                }
-                for b in result.broken
-            ],
-            "cycles": [[str(ref) for ref in cycle.cells] for cycle in result.cycles],
-        },
-        indent=2,
-    )
 

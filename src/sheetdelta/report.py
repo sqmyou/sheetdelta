@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .audit import AuditResult
 from .differ import CellChange, DiffResult, Severity, SheetChange, Shift
 from .model import CellRef
 
@@ -235,3 +236,66 @@ def exit_code(result: DiffResult, fail_on: str) -> int:
     if fail_on == "any":
         return 1 if result.has_changes else 0
     return 1 if result.breaking else 0
+
+
+def render_audit_text(result: AuditResult) -> str:
+    """Render an audit for a human."""
+    lines = [f"{result.path}"]
+    lines.append(
+        f"  {len(result.sheets)} sheet(s), {result.cell_count} cell(s), "
+        f"{result.formula_count} formula(s)"
+    )
+    if result.defined_names:
+        lines.append(f"  {len(result.defined_names)} defined name(s)")
+
+    if result.is_sound:
+        lines.append("")
+        lines.append("No broken references, no circular references.")
+        return "\n".join(lines)
+
+    if result.incomplete:
+        lines.append("")
+        lines.append(f"{len(result.incomplete)} worksheet(s) could not be read:")
+        for name in result.incomplete:
+            lines.append(f"  !! {name}: part missing or malformed (result is incomplete)")
+
+    if result.broken:
+        lines.append("")
+        lines.append(f"{len(result.broken)} broken reference(s):")
+        for broken in result.broken:
+            lines.append(f"  !! {broken.ref.a1:<6} {broken.target}")
+            lines.append(f"        {broken.reason}")
+            lines.append(f"        ={broken.formula}")
+
+    if result.cycles:
+        lines.append("")
+        lines.append(f"{len(result.cycles)} circular reference(s):")
+        for cycle in result.cycles:
+            lines.append(f"  !! {cycle.display}")
+
+    return "\n".join(lines)
+
+
+def render_audit_json(result: AuditResult) -> str:
+    """Render an audit as JSON. The ``incomplete`` list names unread sheets."""
+    return json.dumps(
+        {
+            "path": result.path,
+            "sheets": result.sheets,
+            "cells": result.cell_count,
+            "formulas": result.formula_count,
+            "sound": result.is_sound,
+            "incomplete": result.incomplete,
+            "broken": [
+                {
+                    "cell": str(b.ref),
+                    "target": b.target,
+                    "reason": b.reason,
+                    "formula": f"={b.formula}",
+                }
+                for b in result.broken
+            ],
+            "cycles": [[str(ref) for ref in cycle.cells] for cycle in result.cycles],
+        },
+        indent=2,
+    )

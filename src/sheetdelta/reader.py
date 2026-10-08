@@ -14,7 +14,7 @@ from __future__ import annotations
 import posixpath
 import re
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timedelta
 from xml.etree import ElementTree
 
@@ -76,7 +76,8 @@ def read_workbook(path: str) -> Workbook:
 
         shared = _read_shared_strings(archive)
         date_formats = _read_date_formats(archive)
-        targets = _read_sheet_targets(archive)
+        rels = _read_workbook_rels(archive)
+        targets = _sheet_targets(rels)
         date1904 = _uses_1904(workbook_xml)
 
         sheets: list[Sheet] = []
@@ -84,7 +85,7 @@ def read_workbook(path: str) -> Workbook:
         sheet_names = [name for name, _ in _iter_sheets(workbook_xml)]
         sheet_map = {name.lower(): name for name in sheet_names}
         defined_names = _read_defined_names(workbook_xml)
-        tables = _read_tables(archive, sheet_map)
+        tables = _read_tables(archive, sheet_map, workbook_xml, rels)
         table_names = {name.lower(): table.name for name, table in tables.items()}
 
         for index, (name, rel_id) in enumerate(_iter_sheets(workbook_xml)):
@@ -143,18 +144,22 @@ def _iter_sheets(workbook_xml: ElementTree.Element) -> Iterator[tuple[str, str]]
             yield name, rel_id
 
 
-def _read_sheet_targets(archive: zipfile.ZipFile) -> dict[str, str]:
-    """Map each sheet's relationship id to the part that holds its cells."""
+def _read_workbook_rels(archive: zipfile.ZipFile) -> dict[str, str]:
+    """Read ``xl/_rels/workbook.xml.rels`` once: relationship id -> target."""
     try:
         rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
     except (KeyError, ElementTree.ParseError):
         return {}
-    targets: dict[str, str] = {}
-    for rel in rels.iter(f"{{{_PKG_REL_NS}}}Relationship"):
-        rel_id, target = rel.get("Id"), rel.get("Target")
-        if rel_id and target:
-            targets[rel_id] = target
-    return targets
+    return {
+        rel_id: target
+        for rel in rels.iter(f"{{{_PKG_REL_NS}}}Relationship")
+        if (rel_id := rel.get("Id")) and (target := rel.get("Target"))
+    }
+
+
+def _sheet_targets(rels: Mapping[str, str]) -> dict[str, str]:
+    """Map each sheet's relationship id to the part that holds its cells."""
+    return dict(rels)
 
 
 def _read_shared_strings(archive: zipfile.ZipFile) -> list[str]:
@@ -213,12 +218,34 @@ def _uses_1904(workbook_xml: ElementTree.Element) -> bool:
 
 
 def _read_defined_names(workbook_xml: ElementTree.Element) -> dict[str, str]:
-    """Map lowercased defined name to the reference text it stands for."""
+    """Map lowercased defined name to the reference text it stands for.
+
+    A name can be scoped to one sheet (``localSheetId``) as well as to the whole
+    workbook, and the same word can be defined twice with different ranges. A
+    flat map would keep whichever came last and silently answer with the wrong
+    range, so a sheet-scoped name is skipped when it collides with another
+    definition of the same word rather than guessed at.
+    """
     names: dict[str, str] = {}
+    ambiguous: set[str] = set()
     for node in workbook_xml.iter(f"{{{_MAIN_NS}}}definedName"):
         name = node.get("name")
-        if name and node.text:
-            names[name.lower()] = node.text.strip()
+        if not name or not node.text:
+            continue
+        key = name.lower()
+        text = node.text.strip()
+        # Only a workbook-global name (no localSheetId) can be resolved without
+        # knowing which sheet the formula lives on.
+        if node.get("localSheetId") is not None:
+            if key in names or key in ambiguous:
+                ambiguous.add(key)
+                names.pop(key, None)
+            continue
+        if key in names and names[key] != text:
+            ambiguous.add(key)
+            names.pop(key, None)
+            continue
+        names[key] = text
     return names
 
 
@@ -266,15 +293,21 @@ def _resolve_part_for(owner: str, target: str) -> str:
     return posixpath.normpath(posixpath.join(directory, target))
 
 
-def _read_tables(archive: zipfile.ZipFile, sheet_map: dict[str, str]) -> dict[str, Table]:
+def _read_tables(
+    archive: zipfile.ZipFile,
+    sheet_map: dict[str, str],
+    workbook_xml: ElementTree.Element,
+    rels: Mapping[str, str],
+) -> dict[str, Table]:
     """Read every Excel table, keyed by its lowercased name.
 
     A table's ``ref`` is a range like ``A1:C10``, and its columns are listed in
     order, so a structured reference such as ``Table1[Amount]`` can be resolved
-    to the grid column that name sits in.
+    to the grid column that name sits in. The workbook's own XML and rels are
+    passed in rather than re-read, since this runs on the hot path.
     """
     tables: dict[str, Table] = {}
-    part_to_sheet = _sheet_names_by_part(archive, sheet_map)
+    part_to_sheet = _sheet_names_by_part(workbook_xml, sheet_map, rels)
 
     for sheet_path, table_parts in _sheet_table_parts(archive).items():
         sheet_name = part_to_sheet.get(sheet_path)
@@ -293,31 +326,17 @@ def _read_tables(archive: zipfile.ZipFile, sheet_map: dict[str, str]) -> dict[st
 
 
 def _sheet_names_by_part(
-    archive: zipfile.ZipFile, sheet_map: dict[str, str]
+    workbook_xml: ElementTree.Element,
+    sheet_map: dict[str, str],
+    rels: Mapping[str, str],
 ) -> dict[str, str]:
     """Map a worksheet part path to the sheet name the workbook gives it."""
-    try:
-        rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
-    except (KeyError, ElementTree.ParseError):
-        return {}
-    rel_to_target = {
-        rel.get("Id"): rel.get("Target")
-        for rel in rels.iter(f"{{{_PKG_REL_NS}}}Relationship")
-        if rel.get("Id") and rel.get("Target")
-    }
     out: dict[str, str] = {}
-    for name, rel_id in _iter_sheets(_read_workbook_xml(archive)):
-        target = rel_to_target.get(rel_id)
+    for name, rel_id in _iter_sheets(workbook_xml):
+        target = rels.get(rel_id)
         if target:
             out[_resolve_part(target)] = sheet_map.get(name.lower(), name)
     return out
-
-
-def _read_workbook_xml(archive: zipfile.ZipFile) -> ElementTree.Element:
-    try:
-        return ElementTree.fromstring(archive.read("xl/workbook.xml"))
-    except (KeyError, ElementTree.ParseError):
-        return ElementTree.Element("workbook")
 
 
 def _build_table(node: ElementTree.Element, sheet_name: str) -> Table | None:
@@ -416,6 +435,7 @@ def _read_cells(
             formula=formula,
             cached_value=value,
             value_type="date" if is_date else cell_type,
+            raw_value=raw,
             refs=refs,
         )
 
@@ -490,10 +510,10 @@ def shift_formula(formula: str, source: CellRef, target: CellRef) -> str:
 
     A relative reference stays in the same column/row as the source only when
     it lives on the source's own sheet. A reference to another sheet
-    (``'Other Sheet'!A1``) is anchored in that sheet's grid, so moving the
-    formula to a different row or column does not move it. Absolute parts
-    (``$``) stay put in any case, which is exactly how Excel fills a shared
-    formula across a block.
+    (``'Other Sheet'!A1`` or ``'Other'!A1:B2``) is anchored in that sheet's
+    grid, so moving the formula does not move it. Absolute parts (``$``) stay
+    put in any case, which is exactly how Excel fills a shared formula across a
+    block.
     """
     dcol = target.col - source.col
     drow = target.row - source.row
@@ -501,13 +521,14 @@ def shift_formula(formula: str, source: CellRef, target: CellRef) -> str:
         return formula
 
     scrubbed = _strip_literals(formula)
+    anchored = _anchored_spans(scrubbed)
     out: list[str] = []
     last = 0
     for match in _BARE_REF.finditer(scrubbed):
         out.append(formula[last : match.start()])
         token = match.group(1)
-        if _is_cross_sheet(scrubbed, match.start()):
-            out.append(token)  # on another sheet, so its offsets do not move
+        if _within(match.start(), anchored):
+            out.append(token)  # qualified by a sheet, so its offsets do not move
         else:
             out.append(_shift_one(token, dcol, drow))
         last = match.end()
@@ -515,12 +536,31 @@ def shift_formula(formula: str, source: CellRef, target: CellRef) -> str:
     return "".join(out)
 
 
-def _is_cross_sheet(scrubbed: str, start: int) -> bool:
-    """Whether the token at ``start`` is immediately qualified by a sheet name."""
-    i = start - 1
-    while i >= 0 and scrubbed[i].isspace():
-        i -= 1
-    return i >= 0 and scrubbed[i] == "!"
+# A sheet qualifier is followed by one cell or a range. Both endpoints of a
+# cross-sheet range are anchored, so the whole run has to be protected.
+_QUALIFIED_REF = re.compile(
+    r"\s*\$?[A-Za-z]{1,3}\$?\d{1,7}(?:\s*:\s*\$?[A-Za-z]{1,3}\$?\d{1,7})?"
+)
+
+
+def _anchored_spans(scrubbed: str) -> list[tuple[int, int]]:
+    """Character spans that name another sheet, and so must not be shifted.
+
+    Covers the sheet token itself as well as the reference after it, because a
+    short sheet name (``Q1!A1``) can look like a cell address to the ref regex.
+    """
+    spans: list[tuple[int, int]] = []
+    for bang in (m.start() for m in re.finditer("!", scrubbed)):
+        start = bang
+        while start > 0 and (scrubbed[start - 1].isalnum() or scrubbed[start - 1] in "_.$'"):
+            start -= 1
+        match = _QUALIFIED_REF.match(scrubbed, bang + 1)
+        spans.append((start, match.end() if match else bang + 1))
+    return spans
+
+
+def _within(position: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start <= position < end for start, end in spans)
 
 
 def _shift_one(token: str, dcol: int, drow: int) -> str:

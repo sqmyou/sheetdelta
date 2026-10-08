@@ -164,7 +164,7 @@ def _scan(
     for match in _REF.finditer(text):
         target = _resolve_sheet(match.group("qsheet") or match.group("sheet"), sheet, sheets)
         if target.startswith("#"):
-            continue  # an error literal such as #REF!
+            continue  # an error literal such as '#REF'!A1
         reference = _build(match, target)
         if reference is not None:
             yield reference
@@ -172,8 +172,9 @@ def _scan(
     for match in _NAME.finditer(text):
         name = match.group("name").lower()
         if name in defined_names and name not in seen:
-            # Expand a named range into whatever it points at. One level is
-            # enough: Excel does not allow names to reference each other.
+            # Expand a named range into whatever it points at. Excel does allow
+            # a name to point at another name, so recurse; ``seen`` breaks the
+            # chain if two names ever point at each other.
             seen.add(name)
             yield from _scan(
                 defined_names[name],

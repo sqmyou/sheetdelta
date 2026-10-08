@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-07
+
+### Fixed
+
+- A shared formula whose range ends on another sheet, such as
+  `='Other'!A1:B2`, shifted both endpoints when the fill moved, so the
+  reference pointed at the wrong cells. Excel keeps the whole cross-sheet
+  reference fixed; it now does too.
+- `audit` crashed with `RecursionError` on a workbook with a long dependency
+  chain -- a running-balance column filled down a few thousand rows was
+  enough. The cycle walk now uses an explicit stack, like the diff's reach
+  already did.
+- Deleting a sheet that fed another sheet passed a `--fail-on breaking` check.
+  Excel rewrites the reader to `#REF!`, but a file written by another tool
+  keeps the stale reference and showed no cell change at all. The removed
+  cells that other cells still read are now reported as breaking, with the
+  readers they strand.
+- Two numbers written as `1` and `1.0` were reported as a value change. They
+  are compared as normalized decimals now.
+
+### Changed
+
+- A cell's number format is no longer part of its identity. Switching a cell
+  from a date format to a plain one showed `2023-10-01` becoming `45200` even
+  though the stored serial was identical; that is a display change, not a
+  value change. A cell's raw value is kept alongside its rendered text and
+  compared for value changes, while reports still show the formatted text.
+- A defined name scoped to a single sheet no longer overwrites a workbook-wide
+  name of the same word. Sheet-scoped names are skipped rather than resolved
+  against the wrong sheet.
+- `--json` and `--summary` are now mutually exclusive instead of silently
+  preferring JSON.
+- The reader parses `xl/workbook.xml` and its rels once per file instead of
+  twice, since both are read on the hot path for large workbooks.
+
 ## [0.2.2] - 2026-10-07
 
 ### Fixed
@@ -79,6 +114,7 @@ First release.
   and a range is walked row by row over only the rows that hold cells, so
   `SUM(A:A)` costs the cells it touches rather than a million probes.
 
+[0.3.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.3.0
 [0.2.2]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.2
 [0.2.1]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.1
 [0.2.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.0
