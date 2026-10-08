@@ -75,9 +75,15 @@ on an error. That makes it a CI check without any extra scripting:
 
 ### Machine-readable output
 
+All subcommands take `--format`:
+
 ```console
-sheetdelta diff old.xlsx new.xlsx --json
+sheetdelta diff old.xlsx new.xlsx --format json
 ```
+
+`--json` and `--summary` are kept as aliases for `--format json` and
+`--format summary`. They are mutually exclusive with each other, and with
+`--format`; pick one.
 
 ```json
 {
@@ -93,6 +99,9 @@ sheetdelta diff old.xlsx new.xlsx --json
       "kind": "changed",
       "name": "Revenue",
       "old_name": "Revenue",
+      "shifts": [
+        {"axis": "row", "inserted": true, "count": 1, "at": 3, "label": "1 row inserted at row 3"}
+      ],
       "changes": [
         {
           "cell": "Revenue!D12",
@@ -110,15 +119,18 @@ sheetdelta diff old.xlsx new.xlsx --json
 }
 ```
 
+`shifts` is always a list, empty when the sheet held no insert or remove, so a
+consumer never has to branch on its presence.
+
 ### Summary output
 
 ```console
 sheetdelta diff old.xlsx new.xlsx --summary
+sheetdelta diff old.xlsx new.xlsx --format summary
 ```
 
 The full report is what you want on a laptop. In a CI log you often want the
 shape of the change and nothing else: one line per sheet, with the counts.
-`--json` and `--summary` are mutually exclusive; pick one.
 
 ```console
 $ sheetdelta diff budget_v1.xlsx budget_v2.xlsx --summary
@@ -158,6 +170,40 @@ model.xlsx
 A reference to a cell that is simply empty is not reported. That is normal in
 a spreadsheet, and flagging it would make the audit useless on real files.
 
+### GitHub Actions
+
+Both subcommands can emit GitHub Actions annotations:
+
+```console
+sheetdelta diff old.xlsx new.xlsx --format github
+sheetdelta audit workbook.xlsx --format github
+```
+
+Each line is a workflow command, so the change shows as a marker on the pull
+request. The severity carries over: a change that reaches another cell is
+`::error`, an unread change is `::warning`, and additions or sheet changes are
+`::notice`. When nothing changed, `diff` emits a single notice so the step does
+not look skipped.
+
+A reusable composite action wraps all of this. A workflow that compares the
+workbook on the branch against the one on the base revision:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: git show "origin/${{ github.base_ref }}:models/forecast.xlsx" > /tmp/before.xlsx
+- uses: sqmyou/sheetdelta/.github/actions/sheetdelta-diff@main
+  with:
+    old: /tmp/before.xlsx
+    new: models/forecast.xlsx
+    fail-on: breaking
+```
+
+The action installs sheetdelta, runs the selected `mode` (`diff` or `audit`) in
+the `github` format, writes the human report to the job summary, and exits with
+the diff's code. See `.github/workflows/workbook-diff.yml` for a full example.
+
 ## What it reports
 
 | Change | Severity |
@@ -183,14 +229,21 @@ it. Excel has no "insert row" in the file format: it rewrites each cell below
 to a new address. Compared naively, inserting one row near the top makes the
 whole rest of the sheet look changed and buries the real edit. `sheetdelta`
 lines the contents up instead, so it can say `1 row inserted at row 3` and
-leave only the genuinely new cells as changes. The insert is only claimed when
-the block below it really does line up, so two unrelated sheets are never
-aligned by force. A real edit that moved with the insert is still reported.
+leave only the genuinely new cells as changes. A sheet can hold more than one:
+each insert or remove is found in turn and the remaining difference re-checked,
+so two separate blocks inserted far apart are both reported, and an insert and
+a remove in the same sheet are too. An insert is only claimed when the block
+below it really does line up, so two unrelated sheets are never aligned by
+force. A real edit that moved with the insert is still reported. Shift rows are
+given in the new sheet's numbering, the number a reader sees on screen.
 
 A **structured reference** into an Excel table is understood, not treated as
 text. A formula like `SUM(Sales[Amount])` is resolved against the table's
 definition, so the dependency graph knows which cells it reads and an edit to
-any of them is reported as reaching the formula.
+any of them is reported as reaching the formula. The current-row form,
+`[@Amount]`, is resolved to the single cell on the formula's own row rather
+than the whole column, so a formula that reads its own row does not look like
+it depends on every row.
 
 The **stale** case is worth explaining. Excel stores both a formula and the
 last value it calculated for it. When a file is edited by something that does
@@ -200,7 +253,9 @@ formula next to the old number, which is a quiet way to ship a wrong total.
 
 A **rename** is detected by matching the contents of a removed sheet against
 an added one. Without that, renaming a sheet would look like every cell in it
-changed and bury the real diff.
+changed and bury the real diff. The contents need not match exactly: a sheet
+renamed in the same commit as a light edit is still recognised, as long as at
+least 90% of its cells are unchanged.
 
 ## What it does not do
 

@@ -86,7 +86,6 @@ def read_workbook(path: str) -> Workbook:
         sheet_map = {name.lower(): name for name in sheet_names}
         defined_names = _read_defined_names(workbook_xml)
         tables = _read_tables(archive, sheet_map, workbook_xml, rels)
-        table_names = {name.lower(): table.name for name, table in tables.items()}
 
         for index, (name, rel_id) in enumerate(_iter_sheets(workbook_xml)):
             target = targets.get(rel_id)
@@ -114,7 +113,7 @@ def read_workbook(path: str) -> Workbook:
                         date1904,
                         sheet_map,
                         defined_names,
-                        table_names,
+                        tables,
                     ),
                 )
             )
@@ -392,7 +391,7 @@ def _read_cells(
     date1904: bool,
     sheet_map: dict[str, str],
     defined_names: dict[str, str],
-    table_names: dict[str, str],
+    tables: dict[str, Table],
 ) -> dict[CellRef, Cell]:
     """Read every non-empty cell of one sheet."""
     cells: dict[CellRef, Cell] = {}
@@ -426,7 +425,8 @@ def _read_cells(
                 sheet=sheet_name,
                 sheets=sheet_map,
                 defined_names=defined_names,
-                tables=table_names,
+                tables=tables,
+                row=ref.row,
             )
 
         cells[ref] = Cell(

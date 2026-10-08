@@ -1,0 +1,72 @@
+name: sheetdelta diff
+description: Diff two Excel workbooks and annotate the pull request with what changed.
+author: sqmyou
+
+branding:
+  icon: file-text
+  color: green
+
+inputs:
+  old:
+    description: Path to the earlier workbook.
+    required: false
+  new:
+    description: Path to the later workbook.
+    required: false
+  workbook:
+    description: Path to a single workbook, for mode=audit.
+    required: false
+  mode:
+    description: "diff to compare two workbooks, audit to inspect one."
+    required: false
+    default: diff
+  fail-on:
+    description: "When to fail the step: never, any or breaking."
+    required: false
+    default: breaking
+  version:
+    description: The sheetdelta requirement to install, for example "sheetdelta==0.4.0".
+    required: false
+    default: sheetdelta
+  python-version:
+    description: The Python version to use.
+    required: false
+    default: "3.12"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - shell: bash
+      run: python -m pip install --upgrade pip "${{ inputs.version }}"
+
+    # The annotations go to the log, where GitHub turns each ::error, ::warning
+    # and ::notice into a marker on the pull request's diff. The exit code is
+    # captured before the summary runs, so it reflects the command itself.
+    - id: run
+      shell: bash
+      run: |
+        if [ "${{ inputs.mode }}" = "audit" ]; then
+          sheetdelta audit "${{ inputs.workbook }}" --format github --fail-on "${{ inputs.fail-on }}"
+        else
+          sheetdelta diff "${{ inputs.old }}" "${{ inputs.new }}" --format github --fail-on "${{ inputs.fail-on }}"
+        fi
+        code=$?
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### sheetdelta"
+          echo '```'
+          if [ "${{ inputs.mode }}" = "audit" ]; then
+            sheetdelta audit "${{ inputs.workbook }}" --fail-on never
+          else
+            sheetdelta diff "${{ inputs.old }}" "${{ inputs.new }}" --format summary --fail-on never
+          fi
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - shell: bash
+      run: exit "${{ steps.run.outputs.code }}"

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 
-from .model import CellRef, RangeRef, Reference, TableRef, column_number
+from .model import CellRef, RangeRef, Reference, Table, TableRef, column_number
 
 # Excel string literals are double-quoted, and a literal quote is doubled.
 _STRING_LITERAL = re.compile(r'"(?:[^"]|"")*"')
@@ -79,25 +79,27 @@ _SPECIFIER = re.compile(r"^#(all|data|headers|totals)$", re.IGNORECASE)
 _ITEM = re.compile(r"\[([^\[\]]*)\]")
 
 
-def _parse_structured(brackets: str) -> TableRef | None:
-    """Turn the bracketed part of a structured reference into a TableRef.
+def _parse_structured(brackets: str) -> tuple[str | None, str | None, bool]:
+    """Turn the bracketed part of a structured reference into its parts.
 
     Handles the shapes Excel writes: ``[Amount]``, ``[#All]``, the combined
-    ``[[#Totals],[Amount]]``, and the current-row ``[@Amount]``. The current-row
-    form means "this row of the column", which a diff cannot pin to a cell
-    without knowing the formula's own row, so only the column is kept.
+    ``[[#Totals],[Amount]]``, and the current-row ``[@Amount]``. Returns the
+    specifier, the column, and whether the current-row form was used; the row
+    itself is filled in from the cell the formula sits in.
     """
     items: list[str] = []
+    current_row = False
     for item in _ITEM.findall(brackets):
         inner = item.strip()
         # [@Amount] and [@[Amount]] both mean the current row of a column.
         if inner.startswith("@"):
+            current_row = True
             inner = inner[1:].strip().strip("[]").strip()
         if inner:
             items.append(inner)
 
     if not items:
-        return None
+        return None, None, current_row
 
     specifier: str | None = None
     column: str | None = None
@@ -108,9 +110,28 @@ def _parse_structured(brackets: str) -> TableRef | None:
         elif column is None:
             column = item
 
-    if specifier is None and column is None:
+    return specifier, column, current_row
+
+
+def _validate(reference: Reference, tables: Mapping[str, Table]) -> Reference | None:
+    """Drop a structured reference that cannot be resolved against its table.
+
+    A current-row reference is pinned to the row the formula sits in. If that
+    row is outside the table -- the table is on a different sheet, or the formula
+    sits above or below it -- the reference cannot be placed and is dropped
+    rather than pointed at a row of the wrong table. A column that does not exist
+    is dropped for the same reason.
+    """
+    if not isinstance(reference, TableRef):
+        return reference
+    table = tables.get(reference.table.lower())
+    if table is None:
         return None
-    return TableRef("", column, specifier)
+    if reference.column is not None and table.column_number(reference.column) is None:
+        return None
+    if reference.row is not None and not (table.first_row <= reference.row <= table.last_row):
+        return None
+    return reference
 
 
 def extract_references(
@@ -119,16 +140,19 @@ def extract_references(
     sheet: str,
     sheets: Mapping[str, str],
     defined_names: Mapping[str, str] | None = None,
-    tables: Mapping[str, str] | None = None,
+    tables: Mapping[str, Table] | None = None,
+    row: int | None = None,
 ) -> frozenset[Reference]:
     """Return every cell and range a formula depends on.
 
     ``sheets`` maps a lowercased sheet name to its canonical spelling, so
     ``sheet1!a1`` and ``Sheet1!A1`` land on the same node. ``defined_names``
     maps a lowercased name to its ``refers_to`` text; a name used in the
-    formula is expanded to the range behind it. ``tables`` is the set of known
-    table names, lowercased; a bare name is only read as a structured reference
-    when it names one, so ``SUM(x)`` is not mistaken for a table.
+    formula is expanded to the range behind it. ``tables`` maps a lowercased
+    table name to its definition; a bare name is only read as a structured
+    reference when it names a table there, so ``SUM(x)`` is not mistaken for one.
+    ``row`` is the row the formula sits in, which a current-row structured
+    reference such as ``[@Amount]`` needs.
     """
     return frozenset(
         _scan(
@@ -138,6 +162,7 @@ def extract_references(
             defined_names=defined_names or {},
             tables=tables or {},
             seen=set(),
+            row=row,
         )
     )
 
@@ -148,18 +173,27 @@ def _scan(
     sheet: str,
     sheets: Mapping[str, str],
     defined_names: Mapping[str, str],
-    tables: Mapping[str, str],
+    tables: Mapping[str, Table],
     seen: set[str],
+    row: int | None,
 ) -> Iterable[Reference]:
     text = _strip_string_literals(formula)
 
     for match in _TABLE.finditer(text):
         name = match.group("table")
-        if name.lower() not in tables:
+        table = tables.get(name.lower())
+        if table is None:
             continue  # not a table we know about, so leave it to the name scan
-        structured = _parse_structured(match.group("brackets"))
-        if structured is not None:
-            yield TableRef(tables[name.lower()], structured.column, structured.specifier)
+        specifier, column, current_row = _parse_structured(match.group("brackets"))
+        if specifier is None and column is None:
+            continue
+        # A current-row reference only means a row when the table is on the
+        # formula's own sheet; otherwise there is no row to pin it to.
+        pinned = row if current_row and table.sheet == sheet else None
+        structured: Reference = TableRef(table.name, column, specifier, pinned)
+        validated = _validate(structured, tables)
+        if validated is not None:
+            yield validated
 
     for match in _REF.finditer(text):
         target = _resolve_sheet(match.group("qsheet") or match.group("sheet"), sheet, sheets)
@@ -183,6 +217,7 @@ def _scan(
                 defined_names=defined_names,
                 tables=tables,
                 seen=seen,
+                row=row,
             )
 
 

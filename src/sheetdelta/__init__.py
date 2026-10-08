@@ -45,15 +45,17 @@ from .reader import read_workbook
 from .references import extract_references
 from .report import (
     exit_code,
+    render_audit_github,
     render_audit_json,
     render_audit_text,
+    render_github,
     render_json,
     render_summary,
     render_text,
     to_dict,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "Cell",
@@ -82,8 +84,10 @@ __all__ = [
     "exit_code",
     "extract_references",
     "read_workbook",
+    "render_audit_github",
     "render_audit_json",
     "render_audit_text",
+    "render_github",
     "render_json",
     "render_summary",
     "render_text",

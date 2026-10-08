@@ -25,6 +25,12 @@ from .model import (
     Workbook,
 )
 
+# How alike two sheets must be to be called a rename rather than a remove plus
+# an add. Exact renames score 1.0; a rename committed together with a light
+# edit scores just under it. The value is strict enough that two unrelated
+# sheets, which share at most the odd coincidental cell, stay well below it.
+_RENAME_THRESHOLD = 0.9
+
 
 class ChangeKind(str, Enum):
     ADDED = "added"
@@ -68,6 +74,11 @@ class Shift:
     lower half of the sheet as changed. Detecting the shift lets the report say
     "a row was inserted at 5" instead, and lets the cells that merely moved line
     up so the real edits stand out.
+
+    A sheet can contain more than one insert, so the axis and the at/count pair
+    describe one event and a sheet holds a list of them. Offsets are in the
+    original (pre-shift) coordinates, which is the form the report shows and the
+    form two shifts on one axis combine need to be expressed in.
     """
 
     axis: str  # "row" or "column"
@@ -82,6 +93,31 @@ class Shift:
         verb = "inserted" if self.inserted else "removed"
         return f"{self.count} {noun}{plural} {verb} at {noun} {self.at}"
 
+    @property
+    def delta(self) -> int:
+        return self.count if self.inserted else -self.count
+
+
+def shift_cell(ref: CellRef, shifts: list[Shift]) -> CellRef | None:
+    """Apply every shift to a cell, or None if one of them deletes it.
+
+    Shifts are stored in the original (pre-shift) coordinates, so every test is
+    made against the cell's original address and the offsets are summed. Two
+    shifts on one axis never overlap, which makes the sum well defined.
+    """
+    row_offset = col_offset = 0
+    for shift in sorted(shifts, key=lambda s: s.at):
+        coordinate = ref.row if shift.axis == "row" else ref.col
+        if coordinate < shift.at:
+            continue
+        if not shift.inserted and coordinate < shift.at + shift.count:
+            return None  # a removed line
+        if shift.axis == "row":
+            row_offset += shift.delta
+        else:
+            col_offset += shift.delta
+    return CellRef(ref.sheet, ref.col + col_offset, ref.row + row_offset)
+
 
 @dataclass
 class SheetChange:
@@ -91,7 +127,7 @@ class SheetChange:
     name: str
     old_name: str | None = None
     cell_changes: list[CellChange] = field(default_factory=list)
-    shift: Shift | None = None
+    shifts: list[Shift] = field(default_factory=list)
 
     @property
     def breaking_count(self) -> int:
@@ -141,7 +177,7 @@ def diff_workbooks(old: Workbook, new: Workbook) -> DiffResult:
         old_sheet = old.sheet_by_name(old_name)
         new_sheet = new.sheet_by_name(new_name)
         assert old_sheet is not None and new_sheet is not None
-        cell_changes, shift = _diff_cells(
+        cell_changes, shifts = _diff_cells(
             _rehome(old_sheet.cells, old_name, new_name),
             new_sheet.cells,
             dependents,
@@ -152,7 +188,7 @@ def diff_workbooks(old: Workbook, new: Workbook) -> DiffResult:
                 name=new_name,
                 old_name=old_name,
                 cell_changes=cell_changes,
-                shift=shift,
+                shifts=shifts,
             )
         )
 
@@ -177,15 +213,15 @@ def diff_workbooks(old: Workbook, new: Workbook) -> DiffResult:
             continue
         new_sheet = new.sheet_by_name(name)
         assert new_sheet is not None
-        changes, shift = _diff_cells(old_sheet.cells, new_sheet.cells, dependents)
-        if changes or shift is not None:
+        changes, shifts = _diff_cells(old_sheet.cells, new_sheet.cells, dependents)
+        if changes or shifts:
             result.sheet_changes.append(
                 SheetChange(
                     kind="changed",
                     name=name,
                     old_name=name,
                     cell_changes=changes,
-                    shift=shift,
+                    shifts=shifts,
                 )
             )
 
@@ -232,43 +268,61 @@ def _match_renamed_sheets(old: Workbook, new: Workbook) -> list[tuple[str, str]]
 
     A rename shows up in the file format as a delete plus an insert. Reporting
     that as "everything in this sheet changed" would bury the real diff, so
-    sheets with identical contents are reported as renamed instead.
+    sheets with matching contents are reported as renamed instead. The contents
+    do not have to match exactly: a sheet renamed in the same commit as a small
+    edit is still the same sheet, so a best score above ``_RENAME_THRESHOLD`` is
+    accepted. A sheet whose contents are genuinely different stays below it and
+    is left as a remove plus an add.
     """
     removed = [n for n in old.sheet_names if new.sheet_by_name(n) is None]
     added = [n for n in new.sheet_names if old.sheet_by_name(n) is None]
 
-    pairs: list[tuple[str, str]] = []
-    used: set[str] = set()
+    candidates: list[tuple[float, str, str]] = []
     for old_name in removed:
         old_sheet = old.sheet_by_name(old_name)
         if old_sheet is None:
             continue
         for new_name in added:
-            if new_name in used:
-                continue
             new_sheet = new.sheet_by_name(new_name)
             if new_sheet is None:
                 continue
-            if _same_sheet(old_sheet.cells, new_sheet.cells, new_name):
-                pairs.append((old_name, new_name))
-                used.add(new_name)
-                break
-    return pairs
+            score = _sheet_similarity(old_sheet.cells, new_sheet.cells, new_name)
+            if score >= _RENAME_THRESHOLD:
+                candidates.append((score, old_name, new_name))
+
+    # Pair the closest matches first so each sheet is claimed only once.
+    pairs: list[tuple[str, str]] = []
+    taken_old: set[str] = set()
+    taken_new: set[str] = set()
+    for _, old_name, new_name in sorted(candidates, key=lambda c: (-c[0], c[1], c[2])):
+        if old_name in taken_old or new_name in taken_new:
+            continue
+        pairs.append((old_name, new_name))
+        taken_old.add(old_name)
+        taken_new.add(new_name)
+    return sorted(pairs)
 
 
-def _same_sheet(
+def _sheet_similarity(
     old_cells: dict[CellRef, Cell], new_cells: dict[CellRef, Cell], new_name: str
-) -> bool:
-    """Whether two sheets hold the same cells, ignoring which sheet they sit on."""
-    if len(old_cells) != len(new_cells):
-        return False
+) -> float:
+    """The fraction of the two sheets' cells that sit at the same place and match.
+
+    An exact rename has a similarity of 1. A sheet that was renamed and then
+    lightly edited scores just under it, which is what lets the same sheet be
+    recognised instead of being reported as a remove plus an add -- while a
+    sheet with genuinely different contents stays below the threshold and is
+    left alone.
+    """
+    if not old_cells and not new_cells:
+        return 1.0
+    total = len(old_cells) + len(new_cells)
+    matched = 0
     for ref, cell in old_cells.items():
         other = new_cells.get(CellRef(new_name, ref.col, ref.row))
-        if other is None:
-            return False
-        if cell.formula != other.formula or cell.cached_value != other.cached_value:
-            return False
-    return True
+        if other is not None and cell.signature == other.signature:
+            matched += 1
+    return 2 * matched / total
 
 
 def _rehome(cells: dict[CellRef, Cell], old_name: str, new_name: str) -> dict[CellRef, Cell]:
@@ -308,16 +362,18 @@ def _diff_cells(
     old_cells: dict[CellRef, Cell],
     new_cells: dict[CellRef, Cell],
     dependents: dict[CellRef, set[CellRef]],
-) -> tuple[list[CellChange], Shift | None]:
+) -> tuple[list[CellChange], list[Shift]]:
     """Compare the cells of one sheet, in reading order.
 
-    Returns the changes plus, when the sheet shifted, the shift that was found.
-    The old cells are re-keyed onto their new addresses first, so a cell that
-    only moved is not reported as changed.
+    Returns the changes plus every shift found. The old cells are re-keyed onto
+    their new addresses first, so a cell that only moved is not reported as
+    changed. A sheet can hold more than one insert, so shifts are collected
+    until the remaining difference no longer lines up.
     """
-    shift = _detect_shift(old_cells, new_cells)
-    if shift is not None:
-        old_cells = _apply_shift(old_cells, shift)
+    raw = _detect_shifts(old_cells, new_cells)
+    if raw:
+        old_cells = _apply_shifts(old_cells, raw)
+    shifts = _display_shifts(raw)
 
     changes: list[CellChange] = []
 
@@ -344,59 +400,77 @@ def _diff_cells(
         elif old is not None and new is not None:
             changes.extend(_compare_cell(ref, old, new, dependents))
 
-    return changes, shift
+    return changes, shifts
 
 
-def _detect_shift(
+def _detect_shifts(
     old_cells: dict[CellRef, Cell], new_cells: dict[CellRef, Cell]
-) -> Shift | None:
-    """Find a row or column insert/remove that explains most of the difference.
+) -> list[Shift]:
+    """Find every row or column insert/remove that explains the difference.
 
-    A shift is only reported when the rows or columns after it agree once moved,
-    which is what separates an insert from an edit: two unrelated sheets with
-    different heights must not be described as one inserting rows into the other.
+    A sheet can hold more than one insert, so the lines are traced together and
+    each time the two sides fall out of step an insert or a removal is recorded;
+    when neither side can be resynchronised the line is an edit and both sides
+    advance. The set is only kept if the blocks really do line up once moved,
+    which is what separates an insert from an edit: two unrelated sheets must
+    not be described as one inserting rows into the other.
     """
     for axis in ("row", "column"):
-        shift = _detect_axis(old_cells, new_cells, axis)
-        if shift is not None:
-            return shift
-    return None
+        shifts = _trace_axis(old_cells, new_cells, axis)
+        if shifts and _shifts_line_up(old_cells, new_cells, shifts):
+            return shifts
+    return []
 
 
-def _detect_axis(
+def _trace_axis(
     old_cells: dict[CellRef, Cell], new_cells: dict[CellRef, Cell], axis: str
-) -> Shift | None:
-    """Find a shift on one axis by lining the contents up, not the addresses.
-
-    Addresses alone cannot say where an insert happened: inserting a row pushes
-    every later row up, so the set of new addresses looks the same whether the
-    row went in at the top or the bottom. What identifies the position is the
-    first line whose contents differ -- everything above it stayed put. The
-    insert is then confirmed by checking the old line reappears further down
-    with everything after it moved by the same amount.
-    """
+) -> list[Shift]:
+    """Walk the lines of both sheets and record where they fall in and out of step."""
     old_sig = _line_signatures(old_cells, axis)
     new_sig = _line_signatures(new_cells, axis)
     if old_sig == new_sig:
-        return None
+        return []
 
-    lines = sorted(set(old_sig) | set(new_sig))
-    first = next(i for i in lines if old_sig.get(i) != new_sig.get(i))
+    old_lines = sorted(old_sig)
+    new_lines = sorted(new_sig)
+    shifts: list[Shift] = []
+    oi = ni = 0
 
-    for inserted in (True, False):
-        source = old_sig if inserted else new_sig
-        target = new_sig if inserted else old_sig
-        if first not in source:
+    while oi < len(old_lines) and ni < len(new_lines):
+        old_line, new_line = old_lines[oi], new_lines[ni]
+        if old_sig[old_line] == new_sig[new_line]:
+            oi += 1
+            ni += 1
             continue
-        anchor = next(
-            (line for line in sorted(target) if line > first and target[line] == source[first]),
-            None,
-        )
-        if anchor is None:
-            continue
-        shift = Shift(axis=axis, inserted=inserted, count=anchor - first, at=first)
-        if _shifts_agree(old_cells, new_cells, shift):
-            return shift
+
+        # The line we are on has no counterpart here. Look for it ahead on the
+        # other side: a jump forward in the new sheet is an insertion, a jump in
+        # the old sheet a removal. Whichever resynchronises sooner wins.
+        inserted_at = _find_line(new_lines, ni + 1, new_sig, old_sig[old_line])
+        removed_at = _find_line(old_lines, oi + 1, old_sig, new_sig[new_line])
+        if inserted_at is not None and (removed_at is None or inserted_at - ni <= removed_at - oi):
+            shifts.append(Shift(axis=axis, inserted=True, count=inserted_at - ni, at=old_line))
+            ni = inserted_at
+        elif removed_at is not None:
+            shifts.append(Shift(axis=axis, inserted=False, count=removed_at - oi, at=old_line))
+            oi = removed_at
+        else:
+            oi += 1  # a genuine edit; move past it on both sides
+            ni += 1
+
+    return shifts
+
+
+def _find_line(
+    lines: list[int],
+    start: int,
+    signatures: dict[int, tuple[tuple[int, str | None], ...]],
+    value: tuple[tuple[int, str | None], ...],
+) -> int | None:
+    """The first index at or after ``start`` whose line holds ``value``."""
+    for index in range(start, len(lines)):
+        if signatures[lines[index]] == value:
+            return index
     return None
 
 
@@ -406,7 +480,7 @@ def _line_signatures(
     """Describe each row (or column) by what it holds, ignoring its address.
 
     Two lines with the same signature hold the same contents, which is what
-    makes them comparable across the shift.
+    makes them comparable across a shift.
     """
     gathered: dict[int, list[tuple[int, str | None]]] = {}
     for ref, cell in cells.items():
@@ -416,22 +490,19 @@ def _line_signatures(
     return {line: tuple(sorted(items)) for line, items in gathered.items()}
 
 
-def _shifts_agree(
-    old_cells: dict[CellRef, Cell], new_cells: dict[CellRef, Cell], shift: Shift
+def _shifts_line_up(
+    old_cells: dict[CellRef, Cell], new_cells: dict[CellRef, Cell], shifts: list[Shift]
 ) -> bool:
-    """Check that the moved cells line up once shifted.
+    """Check that the blocks line up once every shift is applied.
 
-    A shift is a claim about the whole block below it, so most of that block has
-    to agree. Requiring every cell to match would reject a real insert that
-    came with an edit; requiring only a majority keeps the claim honest while
-    letting the edit through as a change in its own right.
+    A shift is a claim about the whole sheet, so most of the moved cells have to
+    agree with their new addresses. Requiring every cell to match would reject a
+    real insert that came with an edit; requiring only a majority keeps the
+    claim honest while letting the edit through as a change in its own right.
     """
-    moved = _apply_shift(old_cells, shift)
+    moved = _apply_shifts(old_cells, shifts)
     matched = mismatched = 0
     for ref, old in moved.items():
-        line = ref.row if shift.axis == "row" else ref.col
-        if line < shift.at:
-            continue
         new = new_cells.get(ref)
         if new is not None and new.signature == old.signature:
             matched += 1
@@ -440,22 +511,31 @@ def _shifts_agree(
     return matched > 0 and mismatched <= matched
 
 
-def _apply_shift(cells: dict[CellRef, Cell], shift: Shift) -> dict[CellRef, Cell]:
-    """Re-key the cells at or after the shift onto their new addresses."""
+def _display_shifts(shifts: list[Shift]) -> list[Shift]:
+    """Re-express shifts in the new sheet's numbering.
+
+    Detection works in the old sheet's coordinates, where applying the shifts in
+    order is simple. A person reads the row number off the new sheet, so each
+    later shift is moved forward by the inserts (or backward by the removals)
+    before it.
+    """
+    out: list[Shift] = []
+    offsets = {"row": 0, "column": 0}
+    for shift in sorted(shifts, key=lambda s: (s.axis, s.at)):
+        out.append(
+            Shift(shift.axis, shift.inserted, shift.count, shift.at + offsets[shift.axis])
+        )
+        offsets[shift.axis] += shift.delta
+    return out
+
+
+def _apply_shifts(cells: dict[CellRef, Cell], shifts: list[Shift]) -> dict[CellRef, Cell]:
+    """Re-key every cell under all the shifts at once."""
     out: dict[CellRef, Cell] = {}
     for ref, cell in cells.items():
-        coordinate = ref.row if shift.axis == "row" else ref.col
-        if coordinate < shift.at:
-            out[ref] = cell
-            continue
-        if not shift.inserted and coordinate < shift.at + shift.count:
-            continue  # the removed lines are gone
-        delta = shift.count if shift.inserted else -shift.count
-        if shift.axis == "row":
-            moved = CellRef(ref.sheet, ref.col, ref.row + delta)
-        else:
-            moved = CellRef(ref.sheet, ref.col + delta, ref.row)
-        out[moved] = cell
+        moved = shift_cell(ref, shifts)
+        if moved is not None:
+            out[moved] = cell
     return out
 
 

@@ -18,14 +18,18 @@ from .errors import SheetDeltaError
 from .reader import read_workbook
 from .report import (
     exit_code,
+    render_audit_github,
     render_audit_json,
     render_audit_text,
+    render_github,
     render_json,
     render_summary,
     render_text,
 )
 
 FAIL_ON = ("never", "any", "breaking")
+DIFF_FORMATS = ("text", "json", "summary", "github")
+AUDIT_FORMATS = ("text", "json", "github")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,11 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("old", metavar="OLD.xlsx", help="the earlier workbook")
     diff.add_argument("new", metavar="NEW.xlsx", help="the later workbook")
     output = diff.add_mutually_exclusive_group()
-    output.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    output.add_argument("--json", action="store_true", help="alias for --format=json")
+    output.add_argument("--summary", action="store_true", help="alias for --format=summary")
     output.add_argument(
-        "--summary",
-        action="store_true",
-        help="print counts per sheet with no cell detail, for a CI log",
+        "--format",
+        choices=DIFF_FORMATS,
+        help="output style (default: text); 'github' emits Actions annotations",
     )
     diff.add_argument(
         "--fail-on",
@@ -56,7 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = sub.add_parser("audit", help="inspect one workbook for broken references")
     audit.add_argument("workbook", metavar="FILE.xlsx", help="the workbook to inspect")
-    audit.add_argument("--json", action="store_true", help="emit JSON")
+    audit.add_argument("--json", action="store_true", help="alias for --format=json")
+    audit.add_argument(
+        "--format",
+        choices=AUDIT_FORMATS,
+        help="output style (default: text); 'github' emits Actions annotations",
+    )
     audit.add_argument(
         "--fail-on",
         choices=FAIL_ON,
@@ -82,10 +92,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _cmd_diff(args: argparse.Namespace) -> int:
     result = diff_workbooks(read_workbook(args.old), read_workbook(args.new))
-    if args.json:
+    fmt = args.format or ("json" if args.json else "summary" if args.summary else "text")
+    if fmt == "json":
         print(render_json(result))
-    elif args.summary:
+    elif fmt == "summary":
         print(render_summary(result))
+    elif fmt == "github":
+        output = render_github(result)
+        if output:
+            print(output)
     else:
         print(render_text(result))
     return exit_code(result, args.fail_on)
@@ -93,7 +108,15 @@ def _cmd_diff(args: argparse.Namespace) -> int:
 
 def _cmd_audit(args: argparse.Namespace) -> int:
     result = audit_workbook(read_workbook(args.workbook))
-    print(render_audit_json(result) if args.json else render_audit_text(result))
+    fmt = args.format or ("json" if args.json else "text")
+    if fmt == "json":
+        print(render_audit_json(result))
+    elif fmt == "github":
+        output = render_audit_github(result)
+        if output:
+            print(output)
+    else:
+        print(render_audit_text(result))
     # An audit has no "breaking" tier: any issue it finds is a real defect, so
     # "any" and "breaking" both fail, and only "never" always passes. Leaving
     # "breaking" to fall through to 0 would let a CI job pass on an issue.

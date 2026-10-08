@@ -59,8 +59,8 @@ def _render_sheet(sheet: SheetChange) -> list[str]:
         header += f"  ({detail})"
 
     lines = [header]
-    if sheet.shift is not None:
-        lines.append(f"  {_MARK[Severity.INFO]} {sheet.shift.label}")
+    for shift in sheet.shifts:
+        lines.append(f"  {_MARK[Severity.INFO]} {shift.label}")
     for change in sheet.cell_changes:
         lines.extend(_render_change(change))
     return lines
@@ -117,8 +117,8 @@ def render_summary(result: DiffResult) -> str:
             head = f"  {sheet.name}"
 
         bits: list[str] = []
-        if sheet.shift is not None:
-            bits.append(sheet.shift.label)
+        for shift in sheet.shifts:
+            bits.append(shift.label)
         count = len(sheet.cell_changes)
         if count:
             bits.append(f"{count} change{'s' if count != 1 else ''}")
@@ -186,15 +186,13 @@ def to_dict(result: DiffResult) -> dict[str, Any]:
 
 
 def _sheet_dict(sheet: SheetChange) -> dict[str, Any]:
-    out: dict[str, Any] = {
+    return {
         "kind": sheet.kind,
         "name": sheet.name,
         "old_name": sheet.old_name,
+        "shifts": [_shift_dict(shift) for shift in sheet.shifts],
         "changes": [_change_dict(change) for change in sheet.cell_changes],
     }
-    if sheet.shift is not None:
-        out["shift"] = _shift_dict(sheet.shift)
-    return out
 
 
 def _shift_dict(shift: Shift) -> dict[str, Any]:
@@ -273,6 +271,118 @@ def render_audit_text(result: AuditResult) -> str:
         for cycle in result.cycles:
             lines.append(f"  !! {cycle.display}")
 
+    return "\n".join(lines)
+
+
+_SEVERITY_LEVEL = {
+    Severity.BREAKING: "error",
+    Severity.WARNING: "warning",
+    Severity.INFO: "notice",
+}
+
+
+def _escape_github(message: str) -> str:
+    """Escape the characters GitHub treats as command separators in a message."""
+    return (
+        message.replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+        .replace(":", "%3A")
+        .replace(",", "%2C")
+    )
+
+
+def _annotation(level: str, title: str, message: str, file: str | None = None) -> str:
+    parts = [f"::{level}"]
+    attrs: list[str] = []
+    if file:
+        # A workbook is not a tracked text file, but the annotation still needs
+        # a file to attach to; the workbook path is the closest true answer.
+        attrs.append(f"file={_escape_github(file)}")
+    attrs.append(f"title={_escape_github(title)}")
+    parts.append(" " + ",".join(attrs))
+    parts.append(f"::{_escape_github(message)}")
+    return "".join(parts)
+
+
+def render_github(result: DiffResult) -> str:
+    """Render a diff as GitHub Actions annotations.
+
+    Each change becomes one ``::error``, ``::warning`` or ``::notice`` line so
+    it shows against the pull request's diff. The severity carries over: a
+    formula that corrupts a downstream total is an error, a cosmetic edit is a
+    notice. Everything is on one line, as the workflow command format requires.
+    """
+    lines: list[str] = []
+    for sheet in result.sheet_changes:
+        if sheet.kind != "changed":
+            lines.append(
+                _annotation(
+                    "notice",
+                    f"{sheet.name}: sheet {sheet.kind}",
+                    _sheet_note(sheet),
+                    result.new_path,
+                )
+            )
+        for shift in sheet.shifts:
+            lines.append(
+                _annotation("warning", f"{sheet.name}: {shift.label}", shift.label, result.new_path)
+            )
+        for change in sheet.cell_changes:
+            level = _SEVERITY_LEVEL[change.severity]
+            message = _change_message(sheet.name, change)
+            title = f"{sheet.name}!{change.ref.a1}"
+            lines.append(_annotation(level, title, message, result.new_path))
+    if not lines:
+        # A silent log looks like the step never ran; say so explicitly.
+        lines.append(_annotation("notice", "sheetdelta", "No changes", result.new_path))
+    return "\n".join(lines)
+
+
+def _sheet_note(sheet: SheetChange) -> str:
+    if sheet.kind == "renamed":
+        return f"Sheet '{sheet.old_name}' renamed to '{sheet.name}'"
+    return f"Sheet '{sheet.name}' {sheet.kind}"
+
+
+def _change_message(sheet_name: str, change: CellChange) -> str:
+    message = f"{sheet_name}!{change.ref.a1}: {change.kind.value}"
+    if change.old is not None or change.new is not None:
+        message += f" ({change.old or ''} -> {change.new or ''})"
+    if change.detail:
+        message += f" -- {change.detail}"
+    if change.affected:
+        readers = ", ".join(ref.a1 for ref in change.affected)
+        message += f" [affects {readers}]"
+    return message
+
+
+def render_audit_github(result: AuditResult) -> str:
+    """Render an audit as GitHub Actions annotations."""
+    lines: list[str] = []
+    file = result.path
+    for name in result.incomplete:
+        lines.append(
+            _annotation("warning", f"{name}: unreadable", f"Sheet '{name}' could not be read", file)
+        )
+    for broken in result.broken:
+        lines.append(
+            _annotation(
+                "error",
+                f"{broken.ref.a1}: broken reference",
+                f"{broken.ref.a1}: {broken.target} -- {broken.reason} (={broken.formula})",
+                file,
+            )
+        )
+    for cycle in result.cycles:
+        lines.append(
+            _annotation(
+                "error",
+                "circular reference",
+                f"Circular reference: {cycle.display}",
+                file,
+            )
+        )
     return "\n".join(lines)
 
 

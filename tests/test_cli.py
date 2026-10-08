@@ -74,6 +74,13 @@ class TestCli:
         cells = [c["a1"] for c in payload["sheets"][0]["changes"]]
         assert "A3" in cells
 
+    def test_json_always_has_a_shifts_list(self, tmp_path, capsys):
+        """The list is present and empty, so a consumer need not branch."""
+        old, new = _pair(tmp_path)
+        main(["diff", old, new, "--json", "--fail-on", "never"])
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["sheets"][0]["shifts"] == []
+
     def test_missing_file_exits_two_with_a_message(self, tmp_path, capsys):
         code = main(["diff", str(tmp_path / "nope.xlsx"), str(tmp_path / "nope2.xlsx")])
         assert code == 2
@@ -320,3 +327,50 @@ class TestAudit:
         write_workbook(other, [FakeSheet("S", [FakeCell("A1", value="2")])])
         with pytest.raises(SystemExit):
             main(["diff", path, other, "--json", "--summary"])
+
+    def test_format_json_matches_the_json_flag(self, tmp_path, capsys):
+        old, new = _pair(tmp_path)
+        main(["diff", old, new, "--format", "json", "--fail-on", "never"])
+        via_format = capsys.readouterr().out
+        main(["diff", old, new, "--json", "--fail-on", "never"])
+        via_flag = capsys.readouterr().out
+        assert json.loads(via_format) == json.loads(via_flag)
+
+    def test_format_github_emits_annotations(self, tmp_path, capsys):
+        old, new = _pair(tmp_path)
+        code = main(["diff", old, new, "--format", "github"])
+        out = capsys.readouterr().out
+        assert code == 1
+        # One line per annotation, each a valid workflow command.
+        for line in out.splitlines():
+            assert line.startswith("::")
+        assert any(line.startswith("::error") for line in out.splitlines())
+        # The breaking cell carries its downstream reader.
+        assert "affects B1" in out
+
+    def test_format_github_on_no_changes_is_a_notice(self, tmp_path, capsys):
+        path = str(tmp_path / "same.xlsx")
+        write_workbook(path, [FakeSheet("S", [FakeCell("A1", value="1")])])
+        main(["diff", path, path, "--format", "github", "--fail-on", "never"])
+        out = capsys.readouterr().out.strip()
+        assert out.startswith("::notice")
+
+    def test_audit_format_github_reports_cycles(self, tmp_path, capsys):
+        path = str(tmp_path / "cycle.xlsx")
+        write_workbook(
+            path,
+            [
+                FakeSheet(
+                    "S",
+                    [
+                        FakeCell("A1", formula="B1+1", value="0"),
+                        FakeCell("B1", formula="A1+1", value="0"),
+                    ],
+                )
+            ],
+        )
+        code = main(["audit", path, "--format", "github"])
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "::error" in out
+        assert "Circular reference" in out

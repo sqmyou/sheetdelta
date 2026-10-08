@@ -1,0 +1,41 @@
+name: Workbook diff
+
+# An example of the sheetdelta action annotating a pull request. Point the
+# paths at your own workbooks and delete what you do not need.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.xlsx"
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Check out the base revision beside the head one so both workbooks are
+      # on disk to compare. Adjust the paths for your repository layout.
+      - name: Fetch the base workbook
+        run: |
+          git show "origin/${{ github.base_ref }}:models/forecast.xlsx" > /tmp/before.xlsx
+
+      - name: Compare the workbooks
+        uses: ./.github/actions/sheetdelta-diff
+        with:
+          old: /tmp/before.xlsx
+          new: models/forecast.xlsx
+          fail-on: breaking
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit the workbooks
+        uses: ./.github/actions/sheetdelta-diff
+        with:
+          mode: audit
+          workbook: models/forecast.xlsx
+          fail-on: any

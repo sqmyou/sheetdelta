@@ -148,8 +148,31 @@ def test_renamed_sheet_is_reported_as_a_rename(tmp_path):
     assert result.cell_changes == []
 
 
+def test_a_lightly_edited_sheet_is_still_recognised_as_renamed(tmp_path):
+    """Renaming and editing in one commit must not read as a remove plus an add."""
+    cells = [FakeCell(f"A{row}", value=str(row)) for row in range(1, 101)]
+    edited = [FakeCell(f"A{row}", value=str(row)) for row in range(1, 101)]
+    edited[4] = FakeCell("A5", value="changed")  # 1 of 100 cells differs
+    old = _book(tmp_path, "old.xlsx", [FakeSheet("Data", cells)])
+    new = _book(tmp_path, "new.xlsx", [FakeSheet("Numbers", edited)])
+    result = diff_workbooks(old, new)
+    assert [s.kind for s in result.sheet_changes] == ["renamed"]
+    assert [c.ref.a1 for c in result.cell_changes] == ["A5"]
+
+
+def test_a_mostly_different_sheet_is_not_a_rename(tmp_path):
+    """Below the threshold, the honest answer is a remove plus an add."""
+    old = _book(tmp_path, "old.xlsx", [FakeSheet("Data", [FakeCell(f"A{r}", value=str(r)) for r in range(1, 11)])])
+    new = _book(
+        tmp_path,
+        "new.xlsx",
+        [FakeSheet("Numbers", [FakeCell(f"A{r}", value=f"x{r}") for r in range(1, 11)])],
+    )
+    kinds = {s.kind for s in diff_workbooks(old, new).sheet_changes}
+    assert kinds == {"added", "removed"}
+
+
 def test_added_and_removed_sheets(tmp_path):
-    """Different contents, so this is a real add and remove, not a rename."""
     old = _book(tmp_path, "old.xlsx", [FakeSheet("Gone", [FakeCell("A1", value="1")])])
     new = _book(tmp_path, "new.xlsx", [FakeSheet("Fresh", [FakeCell("A1", value="2")])])
     kinds = {s.kind for s in diff_workbooks(old, new).sheet_changes}

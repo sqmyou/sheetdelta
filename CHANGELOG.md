@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-07
+
+### Added
+
+- More than one insert or remove in a single sheet is now reported. The engine
+  finds shifts one at a time and re-checks the remaining difference after each,
+  so a sheet with two separate blocks inserted reports both instead of only the
+  first. Insert and remove can be mixed in one file. Shift rows are now given in
+  the new sheet's numbering, so the row a reader sees on screen is the row the
+  report names.
+- A current-row structured reference, `[@Amount]`, now pins to a single cell --
+  the one on the formula's own row -- instead of the whole table column. A
+  formula reading its own row no longer looks like it depends on every row, so
+  an edit elsewhere in the column is no longer reported as breaking. A reference
+  whose row is outside the table is dropped rather than mis-resolved.
+- `--format={text,json,summary,github}` for `diff`, and
+  `--format={text,json,github}` for `audit`. `--json` and `--summary` remain as
+  aliases for their formats. The `github` format emits one GitHub Actions
+  workflow command per change, so a PR shows a marker against the workbook:
+  breaking changes as `::error`, warnings as `::warning`, the rest as
+  `::notice`. A workbook with no changes emits a single notice so the step does
+  not look skipped.
+- `render_github` and `render_audit_github` are exported from the package root.
+- A reusable composite action under `.github/actions/sheetdelta-diff` that
+  installs sheetdelta, runs the selected mode in the `github` format, writes a
+  summary to the job page, and exits with the diff's code. An example workflow
+  shows it diffing a workbook against the base revision.
+- The rename matcher now tolerates a light edit. A sheet renamed in the same
+  commit as a small change was previously reported as a remove plus an add,
+  which buried the real diff; it is now recognised as a rename as long as at
+  least 90% of its cells are unchanged.
+
+### Changed
+
+- The JSON `shifts` field is now a list on every sheet, empty when there was no
+  shift. It was a single object or absent before.
+
 ## [0.3.0] - 2026-10-07
 
 ### Fixed
@@ -114,6 +151,7 @@ First release.
   and a range is walked row by row over only the rows that hold cells, so
   `SUM(A:A)` costs the cells it touches rather than a million probes.
 
+[0.4.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.4.0
 [0.3.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.3.0
 [0.2.2]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.2
 [0.2.1]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.1

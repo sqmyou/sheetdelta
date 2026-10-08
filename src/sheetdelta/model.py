@@ -87,9 +87,12 @@ class TableRef:
     table: str
     column: str | None = None
     specifier: str | None = None
+    row: int | None = None  # set for a current-row reference, e.g. [@Amount]
 
     @property
     def a1(self) -> str:
+        if self.row is not None and self.column is not None:
+            return f"{self.table}[@{self.column}]"
         return f"{self.table}[{self.column or self.specifier or ''}]"
 
     def __str__(self) -> str:
@@ -108,6 +111,13 @@ class TableRef:
             min_col = max_col = column
         else:
             min_col, max_col = table.min_col, table.max_col
+
+        # [@Amount] means this row of the column. The formula's own row was
+        # threaded through when the reference was read, so it pins to one cell
+        # rather than the whole column -- which is what stops a reader of a
+        # table from looking like it depends on every row in it.
+        if self.row is not None and self.column is not None:
+            return RangeRef(table.sheet, min_col, max_col, self.row, self.row)
 
         # The specifier picks the rows; without one a structured reference means
         # the data body, which excludes the header and any totals row.
