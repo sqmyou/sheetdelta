@@ -45,7 +45,7 @@ from .reader import read_workbook
 from .references import extract_references
 from .report import exit_code, render_json, render_summary, render_text, to_dict
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "Cell",

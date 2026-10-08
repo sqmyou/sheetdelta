@@ -80,6 +80,7 @@ def read_workbook(path: str) -> Workbook:
         date1904 = _uses_1904(workbook_xml)
 
         sheets: list[Sheet] = []
+        skipped: list[str] = []
         sheet_names = [name for name, _ in _iter_sheets(workbook_xml)]
         sheet_map = {name.lower(): name for name in sheet_names}
         defined_names = _read_defined_names(workbook_xml)
@@ -89,13 +90,16 @@ def read_workbook(path: str) -> Workbook:
         for index, (name, rel_id) in enumerate(_iter_sheets(workbook_xml)):
             target = targets.get(rel_id)
             if target is None:
+                skipped.append(name)
                 continue
             sheet_path = _resolve_part(target)
             try:
                 sheet_xml = ElementTree.fromstring(archive.read(sheet_path))
             except (KeyError, ElementTree.ParseError):
-                # A sheet we cannot read is skipped rather than fatal; the rest
-                # of the diff is still useful.
+                # Keep going so the rest of the diff is still useful, but record
+                # the gap: an audit that cannot see a sheet must say so rather
+                # than report a partial workbook as sound.
+                skipped.append(name)
                 continue
             sheets.append(
                 Sheet(
@@ -120,6 +124,7 @@ def read_workbook(path: str) -> Workbook:
             defined_names=defined_names,
             tables=tables,
             date1904=date1904,
+            partial_reads=skipped,
         )
 
 
@@ -483,8 +488,12 @@ def _formula_text(
 def shift_formula(formula: str, source: CellRef, target: CellRef) -> str:
     """Rewrite a formula's relative references from one cell to another.
 
-    Absolute parts (``$``) stay put, which is exactly how Excel fills a
-    shared formula across a block.
+    A relative reference stays in the same column/row as the source only when
+    it lives on the source's own sheet. A reference to another sheet
+    (``'Other Sheet'!A1``) is anchored in that sheet's grid, so moving the
+    formula to a different row or column does not move it. Absolute parts
+    (``$``) stay put in any case, which is exactly how Excel fills a shared
+    formula across a block.
     """
     dcol = target.col - source.col
     drow = target.row - source.row
@@ -496,10 +505,22 @@ def shift_formula(formula: str, source: CellRef, target: CellRef) -> str:
     last = 0
     for match in _BARE_REF.finditer(scrubbed):
         out.append(formula[last : match.start()])
-        out.append(_shift_one(match.group(1), dcol, drow))
+        token = match.group(1)
+        if _is_cross_sheet(scrubbed, match.start()):
+            out.append(token)  # on another sheet, so its offsets do not move
+        else:
+            out.append(_shift_one(token, dcol, drow))
         last = match.end()
     out.append(formula[last:])
     return "".join(out)
+
+
+def _is_cross_sheet(scrubbed: str, start: int) -> bool:
+    """Whether the token at ``start`` is immediately qualified by a sheet name."""
+    i = start - 1
+    while i >= 0 and scrubbed[i].isspace():
+        i -= 1
+    return i >= 0 and scrubbed[i] == "!"
 
 
 def _shift_one(token: str, dcol: int, drow: int) -> str:

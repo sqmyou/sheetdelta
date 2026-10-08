@@ -99,6 +99,48 @@ class TestCli:
         assert code == 1
         assert "does not exist" in out
 
+    def test_audit_fail_on_breaking_still_fails_on_an_issue(self, tmp_path, capsys):
+        """A broken reference is a defect, so --fail-on breaking must not pass."""
+        path = str(tmp_path / "bad2.xlsx")
+        write_workbook(
+            path,
+            [FakeSheet("S", [FakeCell("A1", formula="'Gone'!B2*2", value="0")])],
+        )
+        code = main(["audit", path, "--fail-on", "breaking"])
+        capsys.readouterr()
+        assert code == 1
+
+    def test_audit_fail_on_never_always_passes(self, tmp_path, capsys):
+        path = str(tmp_path / "bad3.xlsx")
+        write_workbook(
+            path,
+            [FakeSheet("S", [FakeCell("A1", formula="'Gone'!B2*2", value="0")])],
+        )
+        code = main(["audit", path, "--fail-on", "never"])
+        capsys.readouterr()
+        assert code == 0
+
+    def test_audit_reports_an_unreadable_sheet_and_fails(self, tmp_path, capsys):
+        import zipfile
+
+        path = str(tmp_path / "partial.xlsx")
+        write_workbook(
+            path,
+            [FakeSheet("Good", [FakeCell("A1", value="1")]), FakeSheet("Broken")],
+        )
+        with zipfile.ZipFile(path) as archive:
+            parts = {name: archive.read(name) for name in archive.namelist()}
+        parts["xl/worksheets/sheet2.xml"] = b"<worksheet><not-closed>"
+        with zipfile.ZipFile(path, "w") as out:
+            for name, data in parts.items():
+                out.writestr(name, data)
+
+        code = main(["audit", path])
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "could not be read" in out
+        assert "Broken" in out
+
     def test_summary_flag_prints_counts_without_cell_detail(self, tmp_path, capsys):
         old, new = _pair(tmp_path)
         code = main(["diff", old, new, "--summary", "--fail-on", "never"])

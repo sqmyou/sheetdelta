@@ -47,17 +47,18 @@ class AuditResult:
     sheets: list[str] = field(default_factory=list)
     formula_count: int = 0
     cell_count: int = 0
+    incomplete: list[str] = field(default_factory=list)
     defined_names: dict[str, str] = field(default_factory=dict)
     broken: list[BrokenReference] = field(default_factory=list)
     cycles: list[CircularReference] = field(default_factory=list)
 
     @property
     def is_sound(self) -> bool:
-        return not self.broken and not self.cycles
+        return not self.broken and not self.cycles and not self.incomplete
 
     @property
     def issue_count(self) -> int:
-        return len(self.broken) + len(self.cycles)
+        return len(self.broken) + len(self.cycles) + (1 if self.incomplete else 0)
 
 
 def audit_workbook(workbook: Workbook) -> AuditResult:
@@ -65,6 +66,7 @@ def audit_workbook(workbook: Workbook) -> AuditResult:
     result = AuditResult(
         path=workbook.path,
         sheets=workbook.sheet_names,
+        incomplete=list(workbook.partial_reads),
         defined_names=dict(workbook.defined_names),
     )
 

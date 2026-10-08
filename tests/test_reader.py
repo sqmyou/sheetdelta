@@ -194,7 +194,49 @@ class TestShift:
     def test_shift_past_the_grid_becomes_ref_error(self):
         assert shift_formula("A1", CellRef("S", 1, 1), CellRef("S", 1, 0)) == "#REF!"
 
+    def test_cross_sheet_reference_does_not_move(self):
+        """A reference to another sheet is anchored there, so it stays put."""
+        assert (
+            shift_formula("='Other Sheet'!A1+B1", CellRef("S", 1, 1), CellRef("S", 1, 2))
+            == "='Other Sheet'!A1+B2"
+        )
+
+    def test_unquoted_cross_sheet_reference_does_not_move(self):
+        assert shift_formula("Sheet1!A1+B1", CellRef("S", 1, 1), CellRef("S", 1, 2)) == "Sheet1!A1+B2"
+
+    def test_cross_sheet_and_local_refs_move_independently(self):
+        """Both axes: the local ref follows the fill, the cross-sheet one does not."""
+        assert (
+            shift_formula("='O'!A1 + B1", CellRef("S", 2, 1), CellRef("S", 3, 2))
+            == "='O'!A1 + C2"
+        )
+
 
 def test_column_letters_round_trip():
     for number in (1, 26, 27, 52, 703, 16384):
         assert column_number(column_letter(number)) == number
+
+
+def test_an_unreadable_sheet_is_recorded_not_silently_dropped(tmp_path):
+    """A worksheet part the reader cannot parse must be reported as a gap."""
+    import zipfile
+
+    path = str(tmp_path / "broken.xlsx")
+    write_workbook(
+        path,
+        [
+            FakeSheet("Good", [FakeCell("A1", value="1")]),
+            FakeSheet("Broken", [FakeCell("A1", value="2")]),
+        ],
+    )
+    # Corrupt the second sheet's XML part; the workbook still lists it.
+    with zipfile.ZipFile(path) as archive:
+        parts = {name: archive.read(name) for name in archive.namelist()}
+    parts["xl/worksheets/sheet2.xml"] = b"<worksheet><not-closed>"
+    with zipfile.ZipFile(path, "w") as out:
+        for name, data in parts.items():
+            out.writestr(name, data)
+
+    workbook = read_workbook(path)
+    assert workbook.partial_reads == ["Broken"]
+    assert workbook.sheet_names == ["Good"]  # only the readable sheet is present

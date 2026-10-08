@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-10-07
+
+### Fixed
+
+- `[#Totals]` in a structured reference resolved to the last data row instead of
+  the totals row, so `SUM(Table1[#Totals])` pointed one row too high. The
+  existing test asserted the wrong row and was corrected with it.
+- `audit --fail-on breaking` exited `0` even when it found broken or circular
+  references, which could let a CI job pass on a workbook with a `#REF!`. An
+  audit has no "breaking" tier -- any issue it finds is a real defect -- so
+  `breaking` now fails like `any`, and only `never` always passes.
+- A shared formula that referenced another sheet, such as `='Other Sheet'!A1+B1`,
+  shifted its cross-sheet reference along with the local one when the block was
+  filled down. A cross-sheet reference is anchored in that sheet's grid, so it
+  now stays put while the local reference moves.
+- A worksheet part that was missing or malformed inside the package was silently
+  dropped, so an audit could report a partial workbook as sound. The unreadable
+  sheet is now recorded, reported as an incomplete result, and fails the audit.
+- A whole-column range such as `A:A` walked every one of the grid's 1,048,576
+  rows even when only a handful held cells. The range lookup now binary-searches
+  the rows that hold cells, so it costs the cells it touches.
+
 ## [0.1.0] - 2026-10-07
 
 First release.
@@ -57,6 +79,7 @@ First release.
   and a range is walked row by row over only the rows that hold cells, so
   `SUM(A:A)` costs the cells it touches rather than a million probes.
 
+[0.2.2]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.2
 [0.2.1]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.1
 [0.2.0]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.2.0
 [0.1.1]: https://github.com/sqmyou/sheetdelta/releases/tag/v0.1.1

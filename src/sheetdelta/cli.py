@@ -87,11 +87,12 @@ def _cmd_diff(args: argparse.Namespace) -> int:
 def _cmd_audit(args: argparse.Namespace) -> int:
     result = audit_workbook(read_workbook(args.workbook))
     print(render_audit_json(result) if args.json else render_audit_text(result))
+    # An audit has no "breaking" tier: any issue it finds is a real defect, so
+    # "any" and "breaking" both fail, and only "never" always passes. Leaving
+    # "breaking" to fall through to 0 would let a CI job pass on an issue.
     if args.fail_on == "never":
         return 0
-    if args.fail_on == "any":
-        return 1 if result.issue_count else 0
-    return 0
+    return 1 if result.issue_count else 0
 
 
 def render_audit_text(result: AuditResult) -> str:
@@ -108,6 +109,12 @@ def render_audit_text(result: AuditResult) -> str:
         lines.append("")
         lines.append("No broken references, no circular references.")
         return "\n".join(lines)
+
+    if result.incomplete:
+        lines.append("")
+        lines.append(f"{len(result.incomplete)} worksheet(s) could not be read:")
+        for name in result.incomplete:
+            lines.append(f"  !! {name}: part missing or malformed (result is incomplete)")
 
     if result.broken:
         lines.append("")
@@ -134,6 +141,7 @@ def render_audit_json(result: AuditResult) -> str:
             "cells": result.cell_count,
             "formulas": result.formula_count,
             "sound": result.is_sound,
+            "incomplete": result.incomplete,
             "broken": [
                 {
                     "cell": str(b.ref),

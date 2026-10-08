@@ -98,7 +98,7 @@ def test_totals_row_is_excluded_from_the_data_body(tmp_path):
         "S", 2, 2, 2, 4
     )
     assert TableRef("Table1", None, "#Totals").resolve(workbook.tables) == RangeRef(
-        "S", 1, 2, 4, 4
+        "S", 1, 2, 5, 5
     )
 
 

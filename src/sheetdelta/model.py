@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -121,7 +122,7 @@ class TableRef:
         elif specifier == "#totals":
             if not table.has_totals_row:
                 return None
-            min_row = max_row = table.last_data_row
+            min_row = max_row = table.last_row
         else:
             return None
 
@@ -144,8 +145,15 @@ class CellIndex:
 
     def __init__(self, cells: Iterable[CellRef]) -> None:
         self._by_row: dict[tuple[str, int], list[CellRef]] = {}
+        rows_by_sheet: dict[str, set[int]] = {}
         for ref in cells:
             self._by_row.setdefault((ref.sheet, ref.row), []).append(ref)
+            rows_by_sheet.setdefault(ref.sheet, set()).add(ref.row)
+        # A range is answered by binary-searching the rows that actually hold
+        # cells, so ``SUM(A:A)`` costs the rows in use, not all 1,048,576.
+        self._rows_by_sheet: dict[str, list[int]] = {
+            sheet: sorted(rows) for sheet, rows in rows_by_sheet.items()
+        }
 
     def covered(self, reference: Reference) -> list[CellRef]:
         """Every indexed cell that ``reference`` points at."""
@@ -160,9 +168,14 @@ class CellIndex:
                 return []
             return [ref for ref in row_cells if ref.col == reference.col]
 
+        rows = self._rows_by_sheet.get(reference.sheet)
+        if not rows:
+            return []
+        start = bisect.bisect_left(rows, reference.min_row)
+        end = bisect.bisect_right(rows, reference.max_row)
         out: list[CellRef] = []
-        for row_number in range(reference.min_row, reference.max_row + 1):
-            for ref in self._by_row.get((reference.sheet, row_number), ()):
+        for row_number in rows[start:end]:
+            for ref in self._by_row[(reference.sheet, row_number)]:
                 if reference.min_col <= ref.col <= reference.max_col:
                     out.append(ref)
         return out
@@ -286,6 +299,7 @@ class Workbook:
     defined_names: dict[str, str] = field(default_factory=dict)
     tables: dict[str, Table] = field(default_factory=dict)
     date1904: bool = False
+    partial_reads: list[str] = field(default_factory=list)
 
     def sheet_by_name(self, name: str) -> Sheet | None:
         for sheet in self.sheets:
