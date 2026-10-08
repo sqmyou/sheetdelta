@@ -54,15 +54,33 @@ src/sheetdelta/
   refers to it from other cells with relative offsets applied. See
   `shift_formula`.
 - **A row insert is a rewrite, not an edit.** Excel has no "insert row" in the
-  file format; it re-addresses every cell below. `differ._detect_shift` lines
-  the contents up before comparing so the insert reads as one event. The claim
-  is only made when the block below really lines up (`_shifts_agree`), so two
-  unrelated sheets are never aligned by force.
+  file format; it re-addresses every cell below. `differ._detect_shifts` walks
+  both sheets' lines together, recording an insert or a removal whenever they
+  fall out of step (`_trace_axis`), then re-checks the difference after each so
+  a sheet with several inserts is handled. The claim is only kept when the
+  blocks really line up once moved (`_shifts_line_up`), so two unrelated sheets
+  are never aligned by force. Shifts are detected in the old sheet's
+  coordinates and re-expressed in the new sheet's numbering by `_display_shifts`
+  before they reach the report.
+- **A rename need not be exact.** `differ._match_renamed_sheets` scores every
+  removed/added pair with `_sheet_similarity` and pairs the best matches first,
+  accepting anything at or above `_RENAME_THRESHOLD` (0.9). A sheet renamed in
+  the same commit as a light edit is still recognised.
+- **A current-row reference needs the formula's row.** `references.extract_
+  references` takes a `row` and passes it down to `_scan`; `_parse_structured`
+  reports whether `[@Column]` was used, and the row is pinned only when the
+  table is on the formula's own sheet. `_validate` drops a reference whose row
+  falls outside the table, so it is never pointed at the wrong table.
 - **Structured references need the table definition.** `Sales[Amount]` only
   resolves if the table was read. `references.extract_references` takes a
-  `table_names` map and `TableRef.resolve` turns it into a range. A table name
-  that is not in the map is not treated as a table, which keeps a bare
-  `Foo[Bar]` from looking like a reference.
+  `tables` map (lowercased name to `Table`) and `TableRef.resolve` turns it into
+  a range. A name that is not a known table is not treated as one, which keeps
+  a bare `Foo[Bar]` from looking like a reference.
+- **The GitHub annotation format has its own escaping.** `report._escape_github`
+  percent-encodes `%`, CR, LF, `:` and `,`; a workflow command is one line, so
+  any newline in a message would break it. `--format github` reuses the same
+  severity mapping as the text renderer (`_SEVERITY_LEVEL`) but always prints a
+  notice when a diff is empty, so a step never looks like it was skipped.
 - **`__all__` is not checked by any tool.** A name listed there but never
   imported is a runtime `AttributeError` only. `tests/test_exports.py` walks the
   list; keep it passing.
@@ -74,6 +92,12 @@ add a CHANGELOG entry, then `gh release create vX.Y.Z --notes-file ...`. The
 Release workflow builds and publishes to PyPI on `release: published`. PyPI's
 JSON endpoint can lag the simple index by a minute; confirm with
 `pip install --target` rather than the JSON.
+
+Tag the commit with `git tag -a` and push it so the release points at the right
+tree; a GitHub release can exist without a local tag and then drift.
+
+Commits must be authored and committed as `sqmyou <sirsamyoudev@gmail.com>`
+with no `openhands` co-author trailer.
 
 ## Test fixtures
 
